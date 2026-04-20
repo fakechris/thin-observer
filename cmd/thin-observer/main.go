@@ -16,6 +16,7 @@ import (
 
 	"github.com/chris/thin-observer/internal/discovery"
 	"github.com/chris/thin-observer/internal/ingest"
+	"github.com/chris/thin-observer/internal/lineage"
 	"github.com/chris/thin-observer/internal/parser"
 	"github.com/chris/thin-observer/internal/paths"
 	"github.com/chris/thin-observer/internal/store"
@@ -114,6 +115,7 @@ func watchCmd() *cobra.Command {
 			defer cancel()
 
 			ing := ingest.New(s)
+			ing.Inferrer = lineage.New()
 			wch, err := watcher.New(logger)
 			if err != nil {
 				return err

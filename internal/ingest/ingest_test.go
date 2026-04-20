@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/chris/thin-observer/internal/lineage"
 	"github.com/chris/thin-observer/internal/parser"
 	"github.com/chris/thin-observer/internal/store"
 )
@@ -149,6 +150,96 @@ func TestApplyMarksLostAfterTwoMissingRevs(t *testing.T) {
 	if !foundLost {
 		t.Fatal("expected beta to be marked lost")
 	}
+}
+
+func TestApplyWithInferrer_DetectsSplit(t *testing.T) {
+	s := setupStore(t)
+	w := seedWorktree(t, s)
+	in := New(s)
+	in.Inferrer = lineage.New()
+
+	tmp := filepath.Join(t.TempDir(), "plan.md")
+	writeFile(t, tmp, `## Auth
+- [ ] Implement authentication and authorization
+`)
+	d1, _ := parser.ParseFile(tmp)
+	if _, err := in.Apply(context.Background(), w, d1); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, tmp, `## Auth
+- [ ] Implement authentication
+- [ ] Implement authorization
+`)
+	d2, _ := parser.ParseFile(tmp)
+	res, err := in.Apply(context.Background(), w, d2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Split != 1 {
+		t.Fatalf("split = %d, want 1 (result=%+v)", res.Split, res)
+	}
+	tasks, _ := s.TasksByWorktree(context.Background(), w.ID)
+	var children, parents int
+	for _, tk := range tasks {
+		if len(tk.SplitFrom) > 0 {
+			children++
+		}
+		if tk.CurrentTitle == "Implement authentication and authorization" {
+			parents++
+			if tk.Status != "dropped" {
+				t.Errorf("expected umbrella parent status=dropped, got %s", tk.Status)
+			}
+		}
+	}
+	if children != 2 {
+		t.Errorf("expected 2 children with SplitFrom, got %d", children)
+	}
+	if parents != 1 {
+		t.Errorf("expected 1 umbrella parent, got %d", parents)
+	}
+}
+
+func TestApplyWithInferrer_DetectsRename(t *testing.T) {
+	s := setupStore(t)
+	w := seedWorktree(t, s)
+	in := New(s)
+	in.Inferrer = lineage.New()
+
+	tmp := filepath.Join(t.TempDir(), "plan.md")
+	writeFile(t, tmp, "## Stage 1\n- [ ] Install project dependencies\n")
+	d1, _ := parser.ParseFile(tmp)
+	_, _ = in.Apply(context.Background(), w, d1)
+
+	writeFile(t, tmp, "## Stage 1\n- [ ] Install project dependency\n")
+	d2, _ := parser.ParseFile(tmp)
+	res, err := in.Apply(context.Background(), w, d2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 {
+		t.Fatalf("renamed = %d, want 1", res.Renamed)
+	}
+	tasks, _ := s.TasksByWorktree(context.Background(), w.ID)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task after rename, got %d", len(tasks))
+	}
+	tk := tasks[0]
+	if tk.CurrentTitle != "Install project dependency" {
+		t.Errorf("expected new title, got %q", tk.CurrentTitle)
+	}
+	if !containsStr(tk.Aliases, "Install project dependencies") {
+		t.Errorf("expected old title in aliases, got %v", tk.Aliases)
+	}
+}
+
+func containsStr(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func writeFile(t *testing.T, path, content string) {
