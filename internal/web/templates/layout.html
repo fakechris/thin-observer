@@ -1,0 +1,38 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>thin-observer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">thin-observer</a>
+    <nav>
+      <a href="/">Kanban</a>
+      <a href="/archive">Archive</a>
+    </nav>
+  </header>
+  <main>{{block "body" .}}{{end}}</main>
+  <footer class="bottombar">
+    <span>passive observer — markdown is the agent's truth, not ours.</span>
+  </footer>
+</body>
+</html>{{end}}
+
+{{define "card"}}
+<article class="card {{if .Task.MissingInRev}}card-missing{{end}}">
+  <a class="card-title" href="/task/{{.Task.ID}}">{{.Task.CurrentTitle}}</a>
+  <div class="card-meta">
+    <span class="wt">{{.Worktree.Name}}</span>
+    {{if .ProjectName}}<span class="proj">{{.ProjectName}}</span>{{end}}
+    <span class="age">{{humanAge .Task.LastSeenAt}}</span>
+  </div>
+  {{if .Task.Phase}}<div class="card-phase">{{.Task.Phase}}</div>{{end}}
+  <div class="card-badges">
+    <span class="badge badge-{{statusBadge .Task.Status}}">{{.Task.Status}}</span>
+    {{range .Badges}}<span class="badge badge-{{.}}">{{.}}</span>{{end}}
+    {{if lt .Task.Confidence 1.0}}<span class="badge {{confidenceClass .Task.Confidence}}">conf {{printf "%.2f" .Task.Confidence}}</span>{{end}}
+  </div>
+</article>
+{{end}}

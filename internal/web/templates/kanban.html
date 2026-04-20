@@ -1,0 +1,16 @@
+{{define "body"}}
+<section class="kanban">
+  {{range .Columns}}
+  <div class="column col-{{.Key}}">
+    <header class="col-header">
+      <h2>{{.Title}}</h2>
+      <span class="count">{{len .Cards}}</span>
+    </header>
+    <div class="col-body">
+      {{range .Cards}}{{template "card" .}}{{end}}
+      {{if not .Cards}}<p class="empty">—</p>{{end}}
+    </div>
+  </div>
+  {{end}}
+</section>
+{{end}}

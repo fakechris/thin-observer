@@ -1,0 +1,31 @@
+{{define "body"}}
+<section class="archive">
+  <h1>Archive</h1>
+
+  <h2>Lost tasks</h2>
+  <p class="help">Tasks that disappeared from the plan for two consecutive snapshots without explicit lineage.</p>
+  <div class="card-list">
+    {{range .LostTasks}}{{template "card" .}}{{end}}
+    {{if not .LostTasks}}<p class="empty">—</p>{{end}}
+  </div>
+
+  <h2>Dropped tasks</h2>
+  <div class="card-list">
+    {{range .DroppedTasks}}{{template "card" .}}{{end}}
+    {{if not .DroppedTasks}}<p class="empty">—</p>{{end}}
+  </div>
+
+  <h2>Archived worktrees</h2>
+  <ul class="archived-wts">
+    {{range .ArchivedWorktrees}}
+    <li>
+      <strong>{{.Name}}</strong>
+      <code>{{.Path}}</code>
+      {{if .ArchivedAt}}<span class="age">archived {{humanAge .ArchivedAt.Local}}</span>{{end}}
+    </li>
+    {{else}}
+    <li class="empty">—</li>
+    {{end}}
+  </ul>
+</section>
+{{end}}

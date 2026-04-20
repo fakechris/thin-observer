@@ -21,6 +21,7 @@ import (
 	"github.com/chris/thin-observer/internal/paths"
 	"github.com/chris/thin-observer/internal/recap"
 	"github.com/chris/thin-observer/internal/store"
+	"github.com/chris/thin-observer/internal/web"
 	"github.com/chris/thin-observer/internal/watcher"
 	"github.com/oklog/ulid/v2"
 	"github.com/spf13/cobra"
@@ -40,6 +41,7 @@ func main() {
 	root.AddCommand(statusCmd())
 	root.AddCommand(recapCmd())
 	root.AddCommand(taskCmd())
+	root.AddCommand(boardCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -341,6 +343,30 @@ func taskCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func boardCmd() *cobra.Command {
+	var addr string
+	c := &cobra.Command{
+		Use:   "board",
+		Short: "Start the web board (read-only kanban + lineage + archive)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+			s, err := store.Open(paths.DBPath())
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			srv, err := web.New(s, logger)
+			if err != nil {
+				return err
+			}
+			logger.Info("board.listening", "addr", addr)
+			return srv.ListenAndServe(addr)
+		},
+	}
+	c.Flags().StringVar(&addr, "addr", "127.0.0.1:7777", "bind address")
+	return c
 }
 
 // resolveWorktree finds a worktree by (in order): exact path, path suffix, or name.
