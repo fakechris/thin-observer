@@ -19,6 +19,7 @@ import (
 	"github.com/chris/thin-observer/internal/lineage"
 	"github.com/chris/thin-observer/internal/parser"
 	"github.com/chris/thin-observer/internal/paths"
+	"github.com/chris/thin-observer/internal/recap"
 	"github.com/chris/thin-observer/internal/store"
 	"github.com/chris/thin-observer/internal/watcher"
 	"github.com/oklog/ulid/v2"
@@ -36,6 +37,9 @@ func main() {
 	root.AddCommand(parseCmd())
 	root.AddCommand(initCmd())
 	root.AddCommand(watchCmd())
+	root.AddCommand(statusCmd())
+	root.AddCommand(recapCmd())
+	root.AddCommand(taskCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -268,6 +272,101 @@ func signalContext() (context.Context, context.CancelFunc) {
 		cancel()
 	}()
 	return ctx, cancel
+}
+
+func statusCmd() *cobra.Command {
+	var includeArchived bool
+	c := &cobra.Command{
+		Use:   "status",
+		Short: "Print a one-screen overview of all tracked worktrees",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := store.Open(paths.DBPath())
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			rows, err := recap.Overview(cmd.Context(), s, includeArchived)
+			if err != nil {
+				return err
+			}
+			fmt.Print(recap.RenderStatus(rows, time.Now().UTC()))
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&includeArchived, "archived", false, "include archived worktrees")
+	return c
+}
+
+func recapCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "recap <worktree-name-or-path>",
+		Short: "Print a plain-text recap of one worktree's tasks (safe to pipe to an agent)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := store.Open(paths.DBPath())
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			w, err := resolveWorktree(cmd.Context(), s, args[0])
+			if err != nil {
+				return err
+			}
+			out, err := recap.Worktree(cmd.Context(), s, *w)
+			if err != nil {
+				return err
+			}
+			fmt.Print(out)
+			return nil
+		},
+	}
+}
+
+func taskCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "task <id>",
+		Short: "Show one task's full history, events, and overrides",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := store.Open(paths.DBPath())
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			out, err := recap.TaskDetail(cmd.Context(), s, args[0])
+			if err != nil {
+				return fmt.Errorf("task %s: %w", args[0], err)
+			}
+			fmt.Print(out)
+			return nil
+		},
+	}
+}
+
+// resolveWorktree finds a worktree by (in order): exact path, path suffix, or name.
+func resolveWorktree(ctx context.Context, s *store.Store, key string) (*store.Worktree, error) {
+	if w, err := s.WorktreeByPath(ctx, key); err == nil && w != nil {
+		return w, nil
+	}
+	all, err := s.ListWorktrees(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	// Match by basename or name.
+	for i := range all {
+		w := &all[i]
+		if w.Name == key || filepath.Base(w.Path) == key {
+			return w, nil
+		}
+	}
+	// Match by path suffix.
+	for i := range all {
+		w := &all[i]
+		if len(key) > 0 && len(w.Path) >= len(key) && w.Path[len(w.Path)-len(key):] == key {
+			return w, nil
+		}
+	}
+	return nil, fmt.Errorf("worktree not found: %s", key)
 }
 
 func newULID() string {
