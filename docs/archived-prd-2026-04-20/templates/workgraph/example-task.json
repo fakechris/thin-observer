@@ -1,0 +1,22 @@
+{
+  "task_uid": "tsk_01K0AAC",
+  "task_ref": "T-07",
+  "objective_id": "OBJ-20260420-01",
+  "project_id": "PRJ-20260420-01",
+  "plan_id": "PLN-20260420-01",
+  "title_current": "Add authenticated API endpoints",
+  "aliases": [
+    "Add API endpoints"
+  ],
+  "status": "running",
+  "owner_kind": "agent",
+  "split_from": [],
+  "merged_from": [],
+  "supersedes": [],
+  "blocked_by": [
+    "DEC-20260420-02"
+  ],
+  "validated_by": [],
+  "last_seen_rev": 4,
+  "last_activity_at": "2026-04-20T20:10:00Z"
+}

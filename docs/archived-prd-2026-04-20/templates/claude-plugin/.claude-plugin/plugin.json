@@ -1,0 +1,7 @@
+{
+  "name": "work-graph",
+  "version": "0.1.0",
+  "description": "Work Graph Protocol skills, hooks, and optional MCP integration for tracked multi-step engineering work.",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

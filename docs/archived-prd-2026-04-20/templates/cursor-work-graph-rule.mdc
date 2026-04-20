@@ -1,0 +1,24 @@
+---
+description: Use the Work Graph Protocol for multi-step work. Preserve task refs, sync plan edits, and route task lifecycle changes through planctl instead of freehand markdown edits.
+alwaysApply: true
+---
+
+# Work Graph Protocol
+
+Use the Work Graph Protocol whenever the task is multi-step, long-running, cross-file, or should appear on the board.
+
+## Required
+- Preserve `[T-xx]` refs exactly
+- Create new tasks via `planctl add-task`
+- Split tasks via `planctl split-task`
+- Merge tasks via `planctl merge-tasks`
+- Do not silently delete tasks
+- Sync plan edits via `planctl sync-plan`
+- Record blockers via `planctl block`
+- Verify before `planctl done`
+
+## Plan location
+- `.workgraph/plans/*.md`
+
+## Conflict rule
+If this rule conflicts with existing project-specific rules, keep the existing project-specific rules and adapt this workflow around them instead of replacing them.
