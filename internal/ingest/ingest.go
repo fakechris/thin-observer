@@ -8,7 +8,9 @@ package ingest
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -84,7 +86,12 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 
 	txErr := in.Store.WithTx(ctx, func(tx *store.Store) error {
 		// Skip if raw hash is unchanged from the last snapshot of this file.
-		latest, _ := tx.LatestSnapshot(ctx, worktree.ID, doc.SourceFile)
+		// sql.ErrNoRows is the expected "never ingested before" signal — only
+		// real failures should abort ingest.
+		latest, err := tx.LatestSnapshot(ctx, worktree.ID, doc.SourceFile)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("load latest snapshot: %w", err)
+		}
 		if latest != nil && latest.RawHash == doc.RawHash && latest.PhasesJSON == string(phasesJSON) {
 			result.SnapshotID = latest.ID
 			result.Unchanged = true
@@ -519,7 +526,13 @@ func syncPlanDocAndLinks(
 	snapID string,
 	now time.Time,
 ) error {
-	existing, _ := tx.PlanDocByWorktreeAndFile(ctx, worktree.ID, doc.SourceFile)
+	// Distinguish "no row yet" from a real lookup failure — if the latter is
+	// swallowed, we'd mint a fresh ID and ReplacePlanLinks would target it
+	// while UpsertPlanDoc preserved the old one, orphaning link rows.
+	existing, err := tx.PlanDocByWorktreeAndFile(ctx, worktree.ID, doc.SourceFile)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("lookup plan_doc: %w", err)
+	}
 	id := ""
 	if existing != nil {
 		id = existing.ID

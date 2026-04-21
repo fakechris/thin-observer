@@ -312,7 +312,11 @@ func gitHead(t *testing.T, dir string) string {
 
 func mustGet(t *testing.T, client *http.Client, url string) string {
 	t.Helper()
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("NewRequest %s: %v", url, err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}

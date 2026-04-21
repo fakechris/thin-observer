@@ -51,7 +51,46 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(context.Background(), db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{DB: db, Path: path, exec: db}, nil
+}
+
+// migrate applies schema changes CREATE TABLE IF NOT EXISTS cannot make to
+// existing tables (adding columns to already-created tables). Each step is
+// idempotent so Open() stays cheap on repeat startups.
+func migrate(ctx context.Context, db *sql.DB) error {
+	steps := []struct {
+		table  string
+		column string
+		ddl    string
+	}{
+		// event.snapshot_id added in the multi-plan view / time-machine PR to
+		// replace the fragile (worktree_id, timestamp) event-to-snapshot match.
+		{"event", "snapshot_id", `ALTER TABLE event ADD COLUMN snapshot_id TEXT REFERENCES snapshot(id)`},
+	}
+	for _, s := range steps {
+		has, err := columnExists(ctx, db, s.table, s.column)
+		if err != nil {
+			return fmt.Errorf("check %s.%s: %w", s.table, s.column, err)
+		}
+		if has {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, s.ddl); err != nil {
+			return fmt.Errorf("add %s.%s: %w", s.table, s.column, err)
+		}
+	}
+	return nil
+}
+
+func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	var count int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count)
+	return count > 0, err
 }
 
 // WithTx runs fn inside a SQL transaction. The *Store passed to fn shares the

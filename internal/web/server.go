@@ -642,6 +642,7 @@ type planDetailData struct {
 	Worktree       *store.Worktree
 	ProjectName    string
 	LatestSnapshot *store.Snapshot
+	LatestShortSHA string
 	TaskCount      int
 	Cards          []card
 	OutgoingLinks  []planLinkRow
@@ -741,11 +742,19 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 
 	taskCount, _ := s.store.TaskCountByPlanDoc(ctx, pd.ID)
 
+	// Guard the short-SHA slice in Go so a short/empty commit_sha can never
+	// panic the template. Non-git worktrees store "".
+	latestShort := ""
+	if latest != nil && len(latest.CommitSHA) >= 7 {
+		latestShort = latest.CommitSHA[:7]
+	}
+
 	s.render(w, "plan", planDetailData{
 		Plan:           *pd,
 		Worktree:       wt,
 		ProjectName:    projectName,
 		LatestSnapshot: latest,
+		LatestShortSHA: latestShort,
 		TaskCount:      taskCount,
 		Cards:          cards,
 		OutgoingLinks:  outRows,
@@ -1012,26 +1021,48 @@ func (s *Server) handleSnapshotBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Build cards directly from revisions so we render the historical state,
-	// not the live `task` row (which may have mutated since).
+	// not the live `task` row (which may have mutated since). Lineage fields
+	// are copied off the revision too — otherwise the historical board would
+	// render a task that was split/merged/lost with no badge, losing the
+	// very ancestry the time machine exists to preserve.
 	cards := make([]card, 0, len(revs))
 	for _, rev := range revs {
-		cards = append(cards, card{
-			Task: store.Task{
-				ID:           rev.TaskID,
-				WorktreeID:   rev.WorktreeID,
-				ProjectID:    rev.ProjectID,
-				CurrentTitle: rev.Title,
-				Phase:        rev.Phase,
-				Status:       rev.Status,
-				Confidence:   rev.Confidence,
-				SourceFile:   rev.SourceFile,
-				SourceLine:   rev.SourceLine,
-				LastSeenAt:   rev.RecordedAt,
-			},
+		t := store.Task{
+			ID:           rev.TaskID,
+			WorktreeID:   rev.WorktreeID,
+			ProjectID:    rev.ProjectID,
+			CurrentTitle: rev.Title,
+			Aliases:      rev.Aliases,
+			Phase:        rev.Phase,
+			Status:       rev.Status,
+			Confidence:   rev.Confidence,
+			SourceFile:   rev.SourceFile,
+			SourceLine:   rev.SourceLine,
+			LastSeenAt:   rev.RecordedAt,
+			RenamedFrom:  rev.RenamedFrom,
+			SplitFrom:    rev.SplitFrom,
+			MergedFrom:   rev.MergedFrom,
+			Supersedes:   rev.Supersedes,
+		}
+		c := card{
+			Task:         t,
 			Worktree:     *wt,
 			ProjectName:  projectName,
 			PlanBasename: filepath.Base(rev.SourceFile),
-		})
+		}
+		if t.Confidence > 0 && t.Confidence < 0.7 {
+			c.Badges = append(c.Badges, "low-confidence")
+		}
+		if len(t.SplitFrom) > 0 {
+			c.Badges = append(c.Badges, "split")
+		}
+		if len(t.MergedFrom) > 0 {
+			c.Badges = append(c.Badges, "merged")
+		}
+		if t.Status == "lost" {
+			c.Badges = append(c.Badges, "lost")
+		}
+		cards = append(cards, c)
 	}
 
 	short := ""

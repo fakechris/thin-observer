@@ -8,7 +8,7 @@
       {{if .Worktree}}<div><dt>Worktree</dt><dd>{{.Worktree.Name}}{{if .ProjectName}} · {{.ProjectName}}{{end}}</dd></div>{{end}}
       <div><dt>Last seen</dt><dd>{{humanAge .Plan.LastSeenAt}}</dd></div>
       {{if .LatestSnapshot}}
-      <div><dt>Latest snapshot</dt><dd><code>{{.LatestSnapshot.ID}}</code> · {{humanAge .LatestSnapshot.Timestamp}}{{if .LatestSnapshot.CommitSHA}} · <code>{{slice .LatestSnapshot.CommitSHA 0 7}}</code>{{end}}</dd></div>
+      <div><dt>Latest snapshot</dt><dd><code>{{.LatestSnapshot.ID}}</code> · {{humanAge .LatestSnapshot.Timestamp}}{{if .LatestShortSHA}} · <code>{{.LatestShortSHA}}</code>{{end}}</dd></div>
       {{end}}
       <div><dt>Tasks</dt><dd>{{.TaskCount}}</dd></div>
     </dl>

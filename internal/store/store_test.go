@@ -312,6 +312,80 @@ func TestTaskRevisionAppendAndQuery(t *testing.T) {
 	}
 }
 
+// TestMigrateAddsEventSnapshotID simulates a pre-PR database (event table
+// without snapshot_id) and verifies migrate() adds the column so that
+// InsertEvent can then write to it. Without this migration, upgrading an
+// existing DB would fail at runtime on the next event insert.
+func TestMigrateAddsEventSnapshotID(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "db.sqlite")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Recreate the event table without snapshot_id to mimic a pre-migration DB.
+	if _, err := s.DB.ExecContext(ctx, `DROP TABLE event`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `
+		CREATE TABLE event (
+			id          TEXT PRIMARY KEY,
+			timestamp   TEXT NOT NULL,
+			type        TEXT NOT NULL,
+			task_id     TEXT,
+			worktree_id TEXT,
+			data_json   TEXT NOT NULL DEFAULT '{}'
+		)`); err != nil {
+		t.Fatal(err)
+	}
+
+	has, err := columnExists(ctx, s.DB, "event", "snapshot_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Fatal("precondition: event.snapshot_id should be absent")
+	}
+
+	if err := migrate(ctx, s.DB); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	has, err = columnExists(ctx, s.DB, "event", "snapshot_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("migrate did not add event.snapshot_id")
+	}
+
+	// Second migrate() must be a no-op (idempotent).
+	if err := migrate(ctx, s.DB); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+
+	// And InsertEvent with a snapshot_id must now succeed end-to-end.
+	_ = s.UpsertProject(ctx, Project{ID: "p1", Name: "demo", RootPath: "/tmp/demo-mig"})
+	_ = s.UpsertWorktree(ctx, Worktree{ID: "w1", ProjectID: "p1", Name: "f", Path: "/tmp/demo-mig/f"})
+	now := time.Now().UTC()
+	if err := s.InsertSnapshot(ctx, Snapshot{ID: "s1", WorktreeID: "w1", SourceFile: "/tmp/demo-mig/f/task_plan.md", Timestamp: now, RawHash: "h", PhasesJSON: "[]"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertEvent(ctx, Event{ID: "e1", Timestamp: now, Type: "plan_synced", WorktreeID: "w1", SnapshotID: "s1"}); err != nil {
+		t.Fatalf("InsertEvent post-migrate: %v", err)
+	}
+	got, err := s.EventsBySnapshot(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].SnapshotID != "s1" {
+		t.Errorf("EventsBySnapshot after migrate = %+v", got)
+	}
+	s.Close()
+}
+
 func TestArchiveWorktree(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(filepath.Join(dir, "db.sqlite"))
