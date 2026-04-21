@@ -9,12 +9,15 @@ package web
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -32,8 +35,26 @@ var kanbanTpl string
 //go:embed templates/task.html
 var taskTpl string
 
+//go:embed templates/source.html
+var sourceTpl string
+
 //go:embed templates/archive.html
 var archiveTpl string
+
+//go:embed templates/plan.html
+var planTpl string
+
+//go:embed templates/facts.html
+var factsTpl string
+
+//go:embed templates/snapshot.html
+var snapshotTpl string
+
+//go:embed templates/timeline.html
+var timelineTpl string
+
+//go:embed templates/snapshot_board.html
+var snapshotBoardTpl string
 
 //go:embed static/style.css
 var styleCSS []byte
@@ -97,9 +118,15 @@ func New(s *store.Store, logger *slog.Logger) (*Server, error) {
 	}
 	pages := map[string]*template.Template{}
 	for name, src := range map[string]string{
-		"kanban":  kanbanTpl,
-		"task":    taskTpl,
-		"archive": archiveTpl,
+		"kanban":         kanbanTpl,
+		"task":           taskTpl,
+		"source":         sourceTpl,
+		"archive":        archiveTpl,
+		"plan":           planTpl,
+		"facts":          factsTpl,
+		"snapshot":       snapshotTpl,
+		"timeline":       timelineTpl,
+		"snapshot_board": snapshotBoardTpl,
 	} {
 		cl, err := base.Clone()
 		if err != nil {
@@ -119,10 +146,20 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /{$}", s.handleKanban)
 	mux.HandleFunc("GET /archive", s.handleArchive)
 	mux.HandleFunc("GET /task/{id}", s.handleTask)
+	mux.HandleFunc("GET /task/{id}/source", s.handleTaskSource)
+	mux.HandleFunc("GET /plan/{id}", s.handlePlan)
+	mux.HandleFunc("GET /facts", s.handleFacts)
+	mux.HandleFunc("GET /worktree/{wt}/facts", s.handleFacts)
+	mux.HandleFunc("GET /snapshot/{id}", s.handleSnapshot)
+	mux.HandleFunc("GET /worktree/{wt}/timeline", s.handleTimeline)
+	mux.HandleFunc("GET /worktree/{wt}/snapshot/{sid}", s.handleSnapshotBoard)
 	mux.HandleFunc("POST /override/{task_id}", s.handleOverride)
 	mux.HandleFunc("GET /static/style.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css")
 		w.Write(styleCSS)
+	})
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "ok")
@@ -144,8 +181,34 @@ func (s *Server) ListenAndServe(addr string) error {
 // ---- Kanban ----
 
 type kanbanData struct {
-	Columns []column
-	Now     time.Time
+	Columns             []column
+	Projects            []projectOption
+	Plans               []planOption
+	SelectedProjectID   string
+	SelectedProjectName string
+	SelectedPlanID      string
+	SelectedPlanName    string
+	Now                 time.Time
+}
+
+type projectOption struct {
+	ID       string
+	Name     string
+	Selected bool
+	// HREF holds the URL for the pill. The kanban handler scrubs other
+	// filter params when switching project so users don't carry a stale
+	// ?plan across projects.
+	HREF string
+}
+
+type planOption struct {
+	ID           string
+	WorktreeName string
+	Basename     string
+	Title        string
+	ProjectID    string
+	Selected     bool
+	HREF         string
 }
 
 type column struct {
@@ -155,27 +218,101 @@ type column struct {
 }
 
 type card struct {
-	Task        store.Task
-	Worktree    store.Worktree
-	ProjectName string
-	Badges      []string
+	Task         store.Task
+	Worktree     store.Worktree
+	ProjectName  string
+	PlanBasename string
+	PlanID       string
+	Badges       []string
 }
 
 func (s *Server) handleKanban(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	cards, err := s.buildCards(ctx, false)
+	projects, err := s.store.ListProjects(ctx)
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
+	selectedProjectID := r.URL.Query().Get("project")
+	selectedPlanID := r.URL.Query().Get("plan")
+	selectedProjectName := "All Projects"
+	if selectedProjectID != "" {
+		found := false
+		for _, p := range projects {
+			if p.ID == selectedProjectID {
+				found = true
+				selectedProjectName = p.Name
+				break
+			}
+		}
+		if !found {
+			http.Error(w, "project not found: "+selectedProjectID, http.StatusNotFound)
+			return
+		}
+	}
+
+	// Load plan options for the current scope (project filter when set,
+	// otherwise across all active worktrees). If the request asks for a
+	// specific plan, validate it belongs to the current project scope.
+	plans, err := s.planOptions(ctx, selectedProjectID, selectedPlanID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	selectedPlanName := ""
+	var selectedPlanSourceFile string
+	if selectedPlanID != "" {
+		pd, err := s.store.PlanDocByID(ctx, selectedPlanID)
+		if err != nil {
+			http.Error(w, "plan not found: "+selectedPlanID, http.StatusNotFound)
+			return
+		}
+		// When a project filter is set, the plan must belong to it.
+		if selectedProjectID != "" {
+			wt, err := s.store.WorktreeByID(ctx, pd.WorktreeID)
+			if err != nil || wt.ProjectID != selectedProjectID {
+				http.Error(w, "plan does not belong to project", http.StatusBadRequest)
+				return
+			}
+		}
+		selectedPlanName = pd.Title
+		if selectedPlanName == "" {
+			selectedPlanName = filepath.Base(pd.SourceFile)
+		}
+		selectedPlanSourceFile = pd.SourceFile
+	}
+
+	cards, err := s.buildCards(ctx, false, selectedProjectID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if selectedPlanSourceFile != "" {
+		filtered := cards[:0]
+		for _, c := range cards {
+			if c.Task.SourceFile == selectedPlanSourceFile {
+				filtered = append(filtered, c)
+			}
+		}
+		cards = filtered
+	}
 	columns := bucketize(cards, time.Now())
-	data := kanbanData{Columns: columns, Now: time.Now()}
+	data := kanbanData{
+		Columns:             columns,
+		Projects:            projectOptions(projects, selectedProjectID),
+		Plans:               plans,
+		SelectedProjectID:   selectedProjectID,
+		SelectedProjectName: selectedProjectName,
+		SelectedPlanID:      selectedPlanID,
+		SelectedPlanName:    selectedPlanName,
+		Now:                 time.Now(),
+	}
 	s.render(w, "kanban", data)
 }
 
 // buildCards loads all tasks (across all worktrees) into card view models.
 // When includeArchived is false, cards from archived worktrees are skipped.
-func (s *Server) buildCards(ctx context.Context, includeArchived bool) ([]card, error) {
+func (s *Server) buildCards(ctx context.Context, includeArchived bool, projectID string) ([]card, error) {
 	wts, err := s.store.ListWorktrees(ctx, includeArchived)
 	if err != nil {
 		return nil, err
@@ -187,12 +324,29 @@ func (s *Server) buildCards(ctx context.Context, includeArchived bool) ([]card, 
 	}
 	var out []card
 	for _, wt := range wts {
+		if projectID != "" && wt.ProjectID != projectID {
+			continue
+		}
+		// Pre-index plan_docs by source_file so every task rendered from this
+		// worktree can carry its originating plan's ID/basename chip without
+		// re-querying per-task.
+		docs, _ := s.store.PlanDocsByWorktree(ctx, wt.ID)
+		docByFile := map[string]store.PlanDoc{}
+		for _, d := range docs {
+			docByFile[d.SourceFile] = d
+		}
 		tasks, err := s.store.TasksByWorktree(ctx, wt.ID)
 		if err != nil {
 			return nil, err
 		}
 		for _, t := range tasks {
 			c := card{Task: t, Worktree: wt, ProjectName: projects[wt.ProjectID]}
+			if t.SourceFile != "" {
+				c.PlanBasename = filepath.Base(t.SourceFile)
+				if d, ok := docByFile[t.SourceFile]; ok {
+					c.PlanID = d.ID
+				}
+			}
 			if t.Confidence > 0 && t.Confidence < 0.7 {
 				c.Badges = append(c.Badges, "low-confidence")
 			}
@@ -206,6 +360,59 @@ func (s *Server) buildCards(ctx context.Context, includeArchived bool) ([]card, 
 				c.Badges = append(c.Badges, "lost")
 			}
 			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func projectOptions(projects []store.Project, selectedProjectID string) []projectOption {
+	out := make([]projectOption, 0, len(projects))
+	for _, p := range projects {
+		out = append(out, projectOption{
+			ID:       p.ID,
+			Name:     p.Name,
+			Selected: p.ID == selectedProjectID,
+			HREF:     "/?project=" + url.QueryEscape(p.ID),
+		})
+	}
+	return out
+}
+
+// planOptions returns one option per plan_doc visible in the current project
+// scope. Ordering is: worktree name, then plan_doc source_file — stable and
+// cheap to reason about in the template. The href carries the project filter
+// so clicking a plan pill inside a project-scoped board keeps the scope.
+func (s *Server) planOptions(ctx context.Context, projectID, selectedPlanID string) ([]planOption, error) {
+	wts, err := s.store.ListWorktrees(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(wts, func(i, j int) bool { return wts[i].Name < wts[j].Name })
+	var out []planOption
+	for _, wt := range wts {
+		if projectID != "" && wt.ProjectID != projectID {
+			continue
+		}
+		docs, err := s.store.PlanDocsByWorktree(ctx, wt.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range docs {
+			base := filepath.Base(d.SourceFile)
+			q := url.Values{}
+			if projectID != "" {
+				q.Set("project", projectID)
+			}
+			q.Set("plan", d.ID)
+			out = append(out, planOption{
+				ID:           d.ID,
+				WorktreeName: wt.Name,
+				Basename:     base,
+				Title:        d.Title,
+				ProjectID:    wt.ProjectID,
+				Selected:     d.ID == selectedPlanID,
+				HREF:         "/?" + q.Encode(),
+			})
 		}
 	}
 	return out, nil
@@ -278,6 +485,26 @@ type taskData struct {
 	Lineage   lineagePanel
 }
 
+type sourceData struct {
+	Task     store.Task
+	Worktree *store.Worktree
+	Source   sourceContext
+}
+
+type sourceContext struct {
+	File      string
+	Line      int
+	StartLine int
+	EndLine   int
+	Lines     []sourceLine
+}
+
+type sourceLine struct {
+	Number    int
+	Content   string
+	Highlight bool
+}
+
 type lineagePanel struct {
 	Parents  []store.Task // tasks referenced in SplitFrom / MergedFrom
 	Children []store.Task // tasks whose SplitFrom / MergedFrom contains this task
@@ -332,6 +559,491 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleTaskSource(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	t, err := s.store.TaskByID(ctx, id)
+	if err != nil {
+		http.Error(w, "task not found: "+id, http.StatusNotFound)
+		return
+	}
+	if t.SourceFile == "" {
+		http.Error(w, "task has no source file", http.StatusNotFound)
+		return
+	}
+	source, err := readSourceContext(t.SourceFile, t.SourceLine, 14)
+	if err != nil {
+		http.Error(w, "read source: "+err.Error(), http.StatusNotFound)
+		return
+	}
+	wt, _ := s.store.WorktreeByID(ctx, t.WorktreeID)
+	s.render(w, "source", sourceData{
+		Task: *t, Worktree: wt, Source: source,
+	})
+}
+
+func readSourceContext(path string, line, radius int) (sourceContext, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sourceContext{}, err
+	}
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	if line < 1 {
+		line = 1
+	}
+	if line > len(lines) {
+		line = len(lines)
+	}
+	if radius < 0 {
+		radius = 0
+	}
+	start := line - radius
+	if start < 1 {
+		start = 1
+	}
+	end := line + radius
+	if end > len(lines) {
+		end = len(lines)
+	}
+	out := sourceContext{
+		File:      path,
+		Line:      line,
+		StartLine: start,
+		EndLine:   end,
+		Lines:     make([]sourceLine, 0, end-start+1),
+	}
+	for i := start; i <= end; i++ {
+		out.Lines = append(out.Lines, sourceLine{
+			Number:    i,
+			Content:   lines[i-1],
+			Highlight: i == line,
+		})
+	}
+	return out, nil
+}
+
+// ---- Plan detail ----
+
+type planDetailData struct {
+	Plan           store.PlanDoc
+	Worktree       *store.Worktree
+	ProjectName    string
+	LatestSnapshot *store.Snapshot
+	TaskCount      int
+	Cards          []card
+	OutgoingLinks  []planLinkRow
+	IncomingLinks  []planLinkRow
+}
+
+// planLinkRow is a view-model for one row in the Links panels. Either the
+// target plan_doc exists (ToPlan != nil, ID and title are rendered as a
+// link) or it doesn't, in which case we only have the raw target path.
+type planLinkRow struct {
+	Link   store.PlanLink
+	ToPlan *store.PlanDoc
+}
+
+func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	pd, err := s.store.PlanDocByID(ctx, id)
+	if err != nil {
+		http.Error(w, "plan not found: "+id, http.StatusNotFound)
+		return
+	}
+	wt, _ := s.store.WorktreeByID(ctx, pd.WorktreeID)
+
+	projectName := ""
+	if wt != nil {
+		projects, _ := s.store.ListProjects(ctx)
+		for _, p := range projects {
+			if p.ID == wt.ProjectID {
+				projectName = p.Name
+				break
+			}
+		}
+	}
+
+	var latest *store.Snapshot
+	if wt != nil {
+		latest, _ = s.store.LatestSnapshot(ctx, wt.ID, pd.SourceFile)
+	}
+
+	// Tasks that currently point at this plan's source_file.
+	var cards []card
+	if wt != nil {
+		all, err := s.store.TasksByWorktree(ctx, wt.ID)
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+		for _, t := range all {
+			if t.SourceFile != pd.SourceFile {
+				continue
+			}
+			c := card{
+				Task:         t,
+				Worktree:     *wt,
+				ProjectName:  projectName,
+				PlanBasename: filepath.Base(t.SourceFile),
+				PlanID:       pd.ID,
+			}
+			cards = append(cards, c)
+		}
+	}
+	sort.Slice(cards, func(i, j int) bool {
+		return cards[i].Task.SourceLine < cards[j].Task.SourceLine
+	})
+
+	// Outgoing links: read as stored, then resolve any ToPlanID to its PlanDoc.
+	out, _ := s.store.LinksFrom(ctx, pd.ID)
+	outRows := make([]planLinkRow, 0, len(out))
+	for _, l := range out {
+		row := planLinkRow{Link: l}
+		if l.ToPlanID != "" {
+			if tp, err := s.store.PlanDocByID(ctx, l.ToPlanID); err == nil {
+				row.ToPlan = tp
+			}
+		}
+		outRows = append(outRows, row)
+	}
+
+	// Incoming: scan all plan_docs in the worktree for links pointing back here.
+	var inRows []planLinkRow
+	if wt != nil {
+		sibs, _ := s.store.PlanDocsByWorktree(ctx, wt.ID)
+		for _, sib := range sibs {
+			if sib.ID == pd.ID {
+				continue
+			}
+			ls, _ := s.store.LinksFrom(ctx, sib.ID)
+			for _, l := range ls {
+				if l.ToPlanID == pd.ID {
+					sibCopy := sib
+					inRows = append(inRows, planLinkRow{Link: l, ToPlan: &sibCopy})
+				}
+			}
+		}
+	}
+
+	taskCount, _ := s.store.TaskCountByPlanDoc(ctx, pd.ID)
+
+	s.render(w, "plan", planDetailData{
+		Plan:           *pd,
+		Worktree:       wt,
+		ProjectName:    projectName,
+		LatestSnapshot: latest,
+		TaskCount:      taskCount,
+		Cards:          cards,
+		OutgoingLinks:  outRows,
+		IncomingLinks:  inRows,
+	})
+}
+
+// ---- Facts & Snapshot ----
+
+type factsData struct {
+	Worktree     *store.Worktree
+	ProjectName  string
+	Snapshots    []snapshotRow
+	AllWorktrees bool
+}
+
+type snapshotRow struct {
+	Snap        store.Snapshot
+	Worktree    store.Worktree
+	ProjectName string
+	ShortSHA    string
+}
+
+type snapshotDetailData struct {
+	Snap          store.Snapshot
+	Worktree      *store.Worktree
+	ProjectName   string
+	Plan          *store.PlanDoc
+	PhasesPretty  string
+	Events        []store.Event
+	TaskRevisions []taskRevisionRow
+	ShortSHA      string
+}
+
+type taskRevisionRow struct {
+	Rev      store.TaskRevision
+	TaskLink string
+}
+
+func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	worktreeID := r.PathValue("wt")
+
+	var data factsData
+	if worktreeID == "" {
+		data.AllWorktrees = true
+	} else {
+		wt, err := s.store.WorktreeByID(ctx, worktreeID)
+		if err != nil {
+			http.Error(w, "worktree not found", http.StatusNotFound)
+			return
+		}
+		data.Worktree = wt
+		if ps, _ := s.store.ListProjects(ctx); ps != nil {
+			for _, p := range ps {
+				if p.ID == wt.ProjectID {
+					data.ProjectName = p.Name
+				}
+			}
+		}
+	}
+
+	snaps, err := s.store.ListSnapshots(ctx, worktreeID, 100)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	// Index worktrees and projects so each row resolves its labels without
+	// an N+1 query per snapshot.
+	wts, _ := s.store.ListWorktrees(ctx, true)
+	wtByID := map[string]store.Worktree{}
+	for _, wt := range wts {
+		wtByID[wt.ID] = wt
+	}
+	projects, _ := s.store.ListProjects(ctx)
+	projectByID := map[string]string{}
+	for _, p := range projects {
+		projectByID[p.ID] = p.Name
+	}
+	for _, snap := range snaps {
+		row := snapshotRow{Snap: snap}
+		if wt, ok := wtByID[snap.WorktreeID]; ok {
+			row.Worktree = wt
+			row.ProjectName = projectByID[wt.ProjectID]
+		}
+		if len(snap.CommitSHA) >= 7 {
+			row.ShortSHA = snap.CommitSHA[:7]
+		}
+		data.Snapshots = append(data.Snapshots, row)
+	}
+	s.render(w, "facts", data)
+}
+
+func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	snap, err := s.store.SnapshotByID(ctx, id)
+	if err != nil {
+		http.Error(w, "snapshot not found: "+id, http.StatusNotFound)
+		return
+	}
+	wt, _ := s.store.WorktreeByID(ctx, snap.WorktreeID)
+	projectName := ""
+	if wt != nil {
+		if ps, _ := s.store.ListProjects(ctx); ps != nil {
+			for _, p := range ps {
+				if p.ID == wt.ProjectID {
+					projectName = p.Name
+				}
+			}
+		}
+	}
+	plan, _ := s.store.PlanDocByWorktreeAndFile(ctx, snap.WorktreeID, snap.SourceFile)
+
+	// Pretty-print phases_json if it parses. If not, fall back to the raw
+	// string rather than failing the page — raw facts mode has to render
+	// even when data is malformed.
+	pretty := snap.PhasesJSON
+	var tmp any
+	if err := json.Unmarshal([]byte(snap.PhasesJSON), &tmp); err == nil {
+		if b, err := json.MarshalIndent(tmp, "", "  "); err == nil {
+			pretty = string(b)
+		}
+	}
+
+	events, _ := s.store.EventsBySnapshot(ctx, snap.ID)
+	revs, _ := s.store.TaskRevisionsBySnapshot(ctx, snap.ID)
+
+	revRows := make([]taskRevisionRow, 0, len(revs))
+	for _, rev := range revs {
+		revRows = append(revRows, taskRevisionRow{
+			Rev:      rev,
+			TaskLink: "/task/" + rev.TaskID,
+		})
+	}
+
+	short := ""
+	if len(snap.CommitSHA) >= 7 {
+		short = snap.CommitSHA[:7]
+	}
+
+	s.render(w, "snapshot", snapshotDetailData{
+		Snap:          *snap,
+		Worktree:      wt,
+		ProjectName:   projectName,
+		Plan:          plan,
+		PhasesPretty:  pretty,
+		Events:        events,
+		TaskRevisions: revRows,
+		ShortSHA:      short,
+	})
+}
+
+// ---- Time machine ----
+
+type timelineData struct {
+	Worktree    store.Worktree
+	ProjectName string
+	Rows        []timelineRow
+}
+
+type timelineRow struct {
+	Snap        store.Snapshot
+	ShortSHA    string
+	TaskCount   int
+	EventCount  int
+	SourceBase  string
+	BoardURL    string
+	FactsURL    string
+}
+
+type snapshotBoardData struct {
+	Worktree     store.Worktree
+	ProjectName  string
+	Snap         store.Snapshot
+	ShortSHA     string
+	Columns      []column
+	FactsURL     string
+	TimelineURL  string
+}
+
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	worktreeID := r.PathValue("wt")
+	wt, err := s.store.WorktreeByID(ctx, worktreeID)
+	if err != nil {
+		http.Error(w, "worktree not found", http.StatusNotFound)
+		return
+	}
+	projectName := ""
+	if ps, _ := s.store.ListProjects(ctx); ps != nil {
+		for _, p := range ps {
+			if p.ID == wt.ProjectID {
+				projectName = p.Name
+			}
+		}
+	}
+
+	snaps, err := s.store.ListSnapshots(ctx, worktreeID, 200)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+
+	rows := make([]timelineRow, 0, len(snaps))
+	for _, snap := range snaps {
+		revs, _ := s.store.TaskRevisionsBySnapshot(ctx, snap.ID)
+		events, _ := s.store.EventsBySnapshot(ctx, snap.ID)
+		row := timelineRow{
+			Snap:       snap,
+			TaskCount:  len(revs),
+			EventCount: len(events),
+			SourceBase: filepath.Base(snap.SourceFile),
+			BoardURL:   "/worktree/" + worktreeID + "/snapshot/" + snap.ID,
+			FactsURL:   "/snapshot/" + snap.ID,
+		}
+		if len(snap.CommitSHA) >= 7 {
+			row.ShortSHA = snap.CommitSHA[:7]
+		}
+		rows = append(rows, row)
+	}
+
+	s.render(w, "timeline", timelineData{
+		Worktree:    *wt,
+		ProjectName: projectName,
+		Rows:        rows,
+	})
+}
+
+func (s *Server) handleSnapshotBoard(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	worktreeID := r.PathValue("wt")
+	snapID := r.PathValue("sid")
+
+	wt, err := s.store.WorktreeByID(ctx, worktreeID)
+	if err != nil {
+		http.Error(w, "worktree not found", http.StatusNotFound)
+		return
+	}
+	snap, err := s.store.SnapshotByID(ctx, snapID)
+	if err != nil {
+		http.Error(w, "snapshot not found", http.StatusNotFound)
+		return
+	}
+	// Reject mismatched wt/snapshot — otherwise the board would render
+	// another worktree's revisions under this worktree's chrome.
+	if snap.WorktreeID != worktreeID {
+		http.Error(w, "snapshot does not belong to worktree", http.StatusBadRequest)
+		return
+	}
+
+	projectName := ""
+	if ps, _ := s.store.ListProjects(ctx); ps != nil {
+		for _, p := range ps {
+			if p.ID == wt.ProjectID {
+				projectName = p.Name
+			}
+		}
+	}
+
+	revs, err := s.store.TaskRevisionsBySnapshot(ctx, snapID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	// Build cards directly from revisions so we render the historical state,
+	// not the live `task` row (which may have mutated since).
+	cards := make([]card, 0, len(revs))
+	for _, rev := range revs {
+		cards = append(cards, card{
+			Task: store.Task{
+				ID:           rev.TaskID,
+				WorktreeID:   rev.WorktreeID,
+				ProjectID:    rev.ProjectID,
+				CurrentTitle: rev.Title,
+				Phase:        rev.Phase,
+				Status:       rev.Status,
+				Confidence:   rev.Confidence,
+				SourceFile:   rev.SourceFile,
+				SourceLine:   rev.SourceLine,
+				LastSeenAt:   rev.RecordedAt,
+			},
+			Worktree:     *wt,
+			ProjectName:  projectName,
+			PlanBasename: filepath.Base(rev.SourceFile),
+		})
+	}
+
+	short := ""
+	if len(snap.CommitSHA) >= 7 {
+		short = snap.CommitSHA[:7]
+	}
+
+	s.render(w, "snapshot_board", snapshotBoardData{
+		Worktree:    *wt,
+		ProjectName: projectName,
+		Snap:        *snap,
+		ShortSHA:    short,
+		Columns:     bucketize(cards, snap.Timestamp),
+		FactsURL:    "/snapshot/" + snapID,
+		TimelineURL: "/worktree/" + worktreeID + "/timeline",
+	})
+}
+
 // ---- Archive ----
 
 type archiveData struct {
@@ -342,7 +1054,7 @@ type archiveData struct {
 
 func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	cards, err := s.buildCards(ctx, true)
+	cards, err := s.buildCards(ctx, true, "")
 	if err != nil {
 		s.internalError(w, err)
 		return

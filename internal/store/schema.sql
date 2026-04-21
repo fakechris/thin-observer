@@ -90,3 +90,58 @@ CREATE TABLE IF NOT EXISTS override (
 );
 
 CREATE INDEX IF NOT EXISTS idx_override_task ON override(task_id);
+
+-- plan_doc: one row per watched markdown file per worktree. Captures the
+-- observer's latest belief about what the file is (task_plan / progress /
+-- findings / detailed_plan / unknown) and when it was last seen.
+CREATE TABLE IF NOT EXISTS plan_doc (
+    id               TEXT PRIMARY KEY,
+    worktree_id      TEXT NOT NULL REFERENCES worktree(id),
+    source_file      TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    kind             TEXT NOT NULL,
+    last_snapshot_id TEXT REFERENCES snapshot(id),
+    last_seen_at     TEXT NOT NULL,
+    UNIQUE(worktree_id, source_file)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_doc_worktree ON plan_doc(worktree_id);
+
+-- plan_link: cross-document references extracted from markdown. to_source_file
+-- is resolved to an absolute path at ingest time so the resolver can join
+-- directly against plan_doc.source_file. to_plan_id is NULL until that target
+-- plan_doc also exists in the same worktree.
+CREATE TABLE IF NOT EXISTS plan_link (
+    id             TEXT PRIMARY KEY,
+    from_plan_id   TEXT NOT NULL REFERENCES plan_doc(id),
+    to_source_file TEXT NOT NULL,
+    to_plan_id     TEXT REFERENCES plan_doc(id),
+    source_line    INTEGER NOT NULL DEFAULT 0,
+    label          TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_link_from ON plan_link(from_plan_id);
+CREATE INDEX IF NOT EXISTS idx_plan_link_to   ON plan_link(to_plan_id);
+
+-- task_revision: append-only per-snapshot task state. Exists so the time
+-- machine UI can replay the board at any prior snapshot — the live `task`
+-- row mutates in place and loses history otherwise. project_id is
+-- denormalized on purpose so timelines can be scoped without a join.
+CREATE TABLE IF NOT EXISTS task_revision (
+    id           TEXT PRIMARY KEY,
+    snapshot_id  TEXT NOT NULL REFERENCES snapshot(id),
+    task_id      TEXT NOT NULL REFERENCES task(id),
+    worktree_id  TEXT NOT NULL REFERENCES worktree(id),
+    project_id   TEXT NOT NULL REFERENCES project(id),
+    source_file  TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    phase        TEXT,
+    status       TEXT NOT NULL,
+    confidence   REAL NOT NULL DEFAULT 1.0,
+    source_line  INTEGER NOT NULL DEFAULT 0,
+    recorded_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_revision_snapshot ON task_revision(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_task_revision_task     ON task_revision(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_revision_worktree ON task_revision(worktree_id);

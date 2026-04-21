@@ -1,0 +1,80 @@
+{{define "body"}}
+<section class="snapshot-detail">
+  <header class="snapshot-header">
+    <p class="eyebrow">Snapshot</p>
+    <h1><code>{{.Snap.ID}}</code></h1>
+    <dl class="snapshot-facts">
+      {{if .Worktree}}<div><dt>Worktree</dt><dd>{{.Worktree.Name}}{{if .ProjectName}} · {{.ProjectName}}{{end}}</dd></div>{{end}}
+      <div><dt>Source file</dt><dd><code>{{.Snap.SourceFile}}</code></dd></div>
+      <div><dt>Timestamp</dt><dd>{{.Snap.Timestamp.Format "2006-01-02 15:04:05 MST"}} ({{humanAge .Snap.Timestamp}})</dd></div>
+      <div><dt>Raw hash</dt><dd><code>{{.Snap.RawHash}}</code></dd></div>
+      <div><dt>Commit</dt><dd>{{if .Snap.CommitSHA}}<code>{{.Snap.CommitSHA}}</code>{{else}}<span class="empty">—</span>{{end}}</dd></div>
+      {{if .Plan}}<div><dt>Plan</dt><dd><a href="/plan/{{.Plan.ID}}">{{.Plan.Title}}</a></dd></div>{{end}}
+      {{if .Worktree}}<div><dt>Timeline</dt><dd><a href="/worktree/{{.Worktree.ID}}/facts">All snapshots for worktree</a></dd></div>{{end}}
+    </dl>
+  </header>
+
+  <section class="snapshot-section">
+    <h2>phases_json</h2>
+    <pre class="snapshot-json">{{.PhasesPretty}}</pre>
+  </section>
+
+  <section class="snapshot-section">
+    <h2>Task revisions <span class="count">({{len .TaskRevisions}})</span></h2>
+    {{if .TaskRevisions}}
+    <table class="snapshot-table">
+      <thead>
+        <tr>
+          <th>Task</th>
+          <th>Title</th>
+          <th>Phase</th>
+          <th>Status</th>
+          <th>Conf</th>
+          <th>Line</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .TaskRevisions}}
+        <tr>
+          <td><a href="{{.TaskLink}}"><code>{{.Rev.TaskID}}</code></a></td>
+          <td>{{.Rev.Title}}</td>
+          <td>{{if .Rev.Phase}}{{.Rev.Phase}}{{else}}<span class="empty">—</span>{{end}}</td>
+          <td><span class="badge badge-{{statusBadge .Rev.Status}}">{{.Rev.Status}}</span></td>
+          <td>{{printf "%.2f" .Rev.Confidence}}</td>
+          <td>{{.Rev.SourceLine}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="empty">No task revisions for this snapshot.</p>
+    {{end}}
+  </section>
+
+  <section class="snapshot-section">
+    <h2>Events <span class="count">({{len .Events}})</span></h2>
+    {{if .Events}}
+    <table class="snapshot-table">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Task</th>
+          <th>Data</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Events}}
+        <tr>
+          <td><code>{{.Type}}</code></td>
+          <td>{{if .TaskID}}<a href="/task/{{.TaskID}}"><code>{{.TaskID}}</code></a>{{else}}<span class="empty">—</span>{{end}}</td>
+          <td><pre class="snapshot-event-data">{{.Data}}</pre></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="empty">No events for this snapshot.</p>
+    {{end}}
+  </section>
+</section>
+{{end}}

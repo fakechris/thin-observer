@@ -92,19 +92,31 @@ func (w *Watcher) Close() error {
 	return err
 }
 
-// AddWorktree registers a worktree directory (and its immediate subdirs) for
-// watching. fsnotify doesn't recurse, but for Phase 1 we only scan the root
-// and `.workgraph/plans/` so coverage is cheap.
-func (w *Watcher) AddWorktree(path string) error {
-	dirs := []string{path}
-	for _, sub := range []string{".workgraph/plans", "docs", "plans"} {
-		p := filepath.Join(path, sub)
+// planDirs returns the existing directories under worktree that may contain
+// plan-family files: the worktree root plus known plan subdirectories. fsnotify
+// does not recurse, so each of these directories must be registered separately
+// for runtime watch. The same list drives initial ListKnownPlanFiles scans.
+//
+// The set is kept deliberately narrow — do not add broad recursive `docs/`
+// watching here. If a new plan directory convention emerges, add it explicitly.
+var planSubdirs = []string{".workgraph/plans", "docs/plans", "plans"}
+
+func planDirs(worktree string) []string {
+	dirs := []string{worktree}
+	for _, sub := range planSubdirs {
+		p := filepath.Join(worktree, sub)
 		if info, err := os.Stat(p); err == nil && info.IsDir() {
 			dirs = append(dirs, p)
 		}
 	}
+	return dirs
+}
+
+// AddWorktree registers a worktree directory (and its immediate plan subdirs)
+// for watching. fsnotify doesn't recurse, so each plan dir is added separately.
+func (w *Watcher) AddWorktree(path string) error {
 	set := map[string]struct{}{}
-	for _, d := range dirs {
+	for _, d := range planDirs(path) {
 		if err := w.fs.Add(d); err != nil {
 			w.logger.Warn("watcher.add failed", "dir", d, "err", err)
 			continue
@@ -206,14 +218,7 @@ func (w *Watcher) worktreeFor(file string) string {
 // a worktree. Useful for initial ingestion before fsnotify events start.
 func ListKnownPlanFiles(worktree string) []string {
 	var out []string
-	dirs := []string{worktree}
-	for _, sub := range []string{".workgraph/plans", "docs", "plans"} {
-		p := filepath.Join(worktree, sub)
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
-			dirs = append(dirs, p)
-		}
-	}
-	for _, d := range dirs {
+	for _, d := range planDirs(worktree) {
 		entries, err := os.ReadDir(d)
 		if err != nil {
 			continue
@@ -227,9 +232,11 @@ func ListKnownPlanFiles(worktree string) []string {
 				out = append(out, filepath.Join(d, name))
 				continue
 			}
-			// Accept any .md under docs/plans or .workgraph/plans.
+			// Accept any .md under a plan subdirectory (plans / docs/plans
+			// / .workgraph/plans). Base name alone is enough because planDirs
+			// already limits which directories we scan.
 			parent := strings.ToLower(filepath.Base(d))
-			if (parent == "plans" || parent == ".workgraph") && strings.HasSuffix(name, ".md") {
+			if parent == "plans" && strings.HasSuffix(name, ".md") {
 				out = append(out, filepath.Join(d, name))
 			}
 		}

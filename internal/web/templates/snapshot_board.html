@@ -1,0 +1,32 @@
+{{define "body"}}
+<section class="board-header">
+  <div>
+    <p class="eyebrow">Historical board · snapshot</p>
+    <h1>{{.Worktree.Name}} <span class="plan-sep">›</span> <code>{{.Snap.ID}}</code></h1>
+    <p class="timeline-meta">
+      {{if .ProjectName}}{{.ProjectName}} · {{end}}
+      {{.Snap.Timestamp.Format "2006-01-02 15:04:05 MST"}} ({{humanAge .Snap.Timestamp}})
+      {{if .ShortSHA}} · <code>{{.ShortSHA}}</code>{{end}}
+    </p>
+    <nav class="timeline-links">
+      <a href="{{.TimelineURL}}">← Timeline</a>
+      <span class="timeline-sep">·</span>
+      <a href="{{.FactsURL}}">Raw facts</a>
+    </nav>
+  </div>
+</section>
+<section class="kanban">
+  {{range .Columns}}
+  <div class="column col-{{.Key}}">
+    <header class="col-header">
+      <h2>{{.Title}}</h2>
+      <span class="count">{{len .Cards}}</span>
+    </header>
+    <div class="col-body">
+      {{range .Cards}}{{template "card" .}}{{end}}
+      {{if not .Cards}}<p class="empty">—</p>{{end}}
+    </div>
+  </div>
+  {{end}}
+</section>
+{{end}}

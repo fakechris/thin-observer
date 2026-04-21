@@ -10,8 +10,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/chris/thin-observer/internal/gitutil"
 	"github.com/chris/thin-observer/internal/lineage"
 	"github.com/chris/thin-observer/internal/parser"
 	"github.com/chris/thin-observer/internal/store"
@@ -23,10 +27,36 @@ type Ingester struct {
 	Store *store.Store
 	// Inferrer is optional. When nil, exact-match ingestion is used.
 	Inferrer lineage.Inferrer
+	// Logger receives non-fatal ingest warnings (e.g., git rev-parse failure).
+	// Nil is fine — falls back to slog.Default.
+	Logger *slog.Logger
+	// headSHA overrides the commit-SHA lookup in tests. Defaults to
+	// gitutil.HeadSHA when nil.
+	headSHA func(ctx context.Context, worktreePath string) (string, error)
 }
 
 func New(s *store.Store) *Ingester {
 	return &Ingester{Store: s}
+}
+
+func (in *Ingester) logger() *slog.Logger {
+	if in.Logger != nil {
+		return in.Logger
+	}
+	return slog.Default()
+}
+
+func (in *Ingester) resolveHeadSHA(ctx context.Context, worktreePath string) string {
+	fn := in.headSHA
+	if fn == nil {
+		fn = gitutil.HeadSHA
+	}
+	sha, err := fn(ctx, worktreePath)
+	if err != nil {
+		in.logger().Warn("ingest.head_sha_failed", "worktree", worktreePath, "err", err)
+		return ""
+	}
+	return sha
 }
 
 // Apply persists a parsed doc against the given worktree and returns the
@@ -50,7 +80,7 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 	txErr := in.Store.WithTx(ctx, func(tx *store.Store) error {
 		// Skip if raw hash is unchanged from the last snapshot of this file.
 		latest, _ := tx.LatestSnapshot(ctx, worktree.ID, doc.SourceFile)
-		if latest != nil && latest.RawHash == doc.RawHash {
+		if latest != nil && latest.RawHash == doc.RawHash && latest.PhasesJSON == string(phasesJSON) {
 			result.SnapshotID = latest.ID
 			result.Unchanged = true
 			return nil
@@ -63,6 +93,7 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 			Timestamp:  now,
 			RawHash:    doc.RawHash,
 			PhasesJSON: string(phasesJSON),
+			CommitSHA:  in.resolveHeadSHA(ctx, worktree.Path),
 		}
 		if err := tx.InsertSnapshot(ctx, snap); err != nil {
 			return fmt.Errorf("insert snapshot: %w", err)
@@ -391,7 +422,170 @@ func (in *Ingester) applyInTx(
 	}); err != nil {
 		return err
 	}
+
+	// plan_doc + plan_link: upsert the document-level row for this file and
+	// replace its outbound links with whatever the parser just extracted.
+	// Link resolution (to_plan_id) runs last so newly-ingested plan_docs in
+	// the same worktree can be linked immediately.
+	if err := syncPlanDocAndLinks(ctx, tx, worktree, doc, snapID, now); err != nil {
+		return err
+	}
+	if err := tx.ResolvePlanLinkTargets(ctx, worktree.ID); err != nil {
+		return fmt.Errorf("resolve plan links: %w", err)
+	}
+
+	// task_revision: append one row per live task scoped to this snapshot's
+	// source file, so the time machine can replay the board at this point.
+	// We re-read tasks after upserts so renames / splits / merges are reflected.
+	if err := writeTaskRevisions(ctx, tx, worktree, doc.SourceFile, snapID, now); err != nil {
+		return fmt.Errorf("write task revisions: %w", err)
+	}
 	return nil
+}
+
+// writeTaskRevisions records one task_revision per live task in this worktree
+// sourced from the just-ingested file. "Live" means the task's current
+// source_file matches — a task that was dropped into a different file or
+// merged away ends up in a different revision set.
+//
+// project_id is asserted by join to catch a theoretical worktree/task mismatch
+// rather than trust the loose row data.
+func writeTaskRevisions(
+	ctx context.Context,
+	tx *store.Store,
+	worktree store.Worktree,
+	sourceFile string,
+	snapID string,
+	now time.Time,
+) error {
+	tasks, err := tx.TasksByWorktree(ctx, worktree.ID)
+	if err != nil {
+		return fmt.Errorf("load tasks: %w", err)
+	}
+	for _, t := range tasks {
+		if t.SourceFile != sourceFile {
+			continue
+		}
+		if t.ProjectID != worktree.ProjectID {
+			return fmt.Errorf("task %s project %q does not match worktree project %q",
+				t.ID, t.ProjectID, worktree.ProjectID)
+		}
+		rev := store.TaskRevision{
+			ID:         newULID(now),
+			SnapshotID: snapID,
+			TaskID:     t.ID,
+			WorktreeID: worktree.ID,
+			ProjectID:  t.ProjectID,
+			SourceFile: t.SourceFile,
+			Title:      t.CurrentTitle,
+			Phase:      t.Phase,
+			Status:     t.Status,
+			Confidence: t.Confidence,
+			SourceLine: t.SourceLine,
+			RecordedAt: now,
+		}
+		if err := tx.InsertTaskRevision(ctx, rev); err != nil {
+			return fmt.Errorf("insert task_revision: %w", err)
+		}
+	}
+	return nil
+}
+
+// syncPlanDocAndLinks upserts a plan_doc for the just-ingested file and
+// replaces its outbound links. The existing ID is preserved across upserts
+// so plan_link foreign keys remain stable.
+func syncPlanDocAndLinks(
+	ctx context.Context,
+	tx *store.Store,
+	worktree store.Worktree,
+	doc *parser.PlanDoc,
+	snapID string,
+	now time.Time,
+) error {
+	existing, _ := tx.PlanDocByWorktreeAndFile(ctx, worktree.ID, doc.SourceFile)
+	id := ""
+	if existing != nil {
+		id = existing.ID
+	} else {
+		id = newULID(now)
+	}
+	pd := store.PlanDoc{
+		ID:             id,
+		WorktreeID:     worktree.ID,
+		SourceFile:     doc.SourceFile,
+		Title:          planDocTitle(doc),
+		Kind:           planDocKind(doc.SourceFile),
+		LastSnapshotID: snapID,
+		LastSeenAt:     now,
+	}
+	if err := tx.UpsertPlanDoc(ctx, pd); err != nil {
+		return fmt.Errorf("upsert plan_doc: %w", err)
+	}
+
+	links := make([]store.PlanLink, 0, len(doc.Links))
+	for _, pl := range doc.Links {
+		links = append(links, store.PlanLink{
+			ID:           newULID(now),
+			FromPlanID:   id,
+			ToSourceFile: resolveLinkTarget(doc.SourceFile, pl.Target),
+			SourceLine:   pl.Line,
+			Label:        pl.Label,
+		})
+	}
+	if err := tx.ReplacePlanLinks(ctx, id, links); err != nil {
+		return fmt.Errorf("replace plan_links: %w", err)
+	}
+	return nil
+}
+
+// planDocTitle picks frontmatter.title, else the first phase heading, else
+// the file basename. Matches the rules in the dev brief.
+func planDocTitle(doc *parser.PlanDoc) string {
+	if t := strings.TrimSpace(doc.Frontmatter.Title); t != "" {
+		return t
+	}
+	for _, ph := range doc.Phases {
+		if name := strings.TrimSpace(ph.Name); name != "" {
+			return name
+		}
+	}
+	return filepath.Base(doc.SourceFile)
+}
+
+// planDocKind classifies a plan file by path/basename. Order matters: the
+// basename rules win over the directory rule so a literal task_plan.md inside
+// docs/plans/ still reads as task_plan.
+func planDocKind(sourceFile string) string {
+	base := strings.ToLower(filepath.Base(sourceFile))
+	switch base {
+	case "task_plan.md", "plan.md", "todo.md", "tasks.md":
+		return "task_plan"
+	case "progress.md", "session.md", "log.md":
+		return "progress"
+	case "findings.md", "research.md", "notes.md":
+		return "findings"
+	}
+	// Use forward slashes for matching regardless of OS path separator.
+	p := filepath.ToSlash(strings.ToLower(sourceFile))
+	if strings.Contains(p, "/docs/plans/") || strings.Contains(p, "/plans/") {
+		return "detailed_plan"
+	}
+	return "unknown"
+}
+
+// resolveLinkTarget converts a possibly-relative link target to an absolute
+// path, anchored against the containing source file. Absolute targets pass
+// through unchanged (after filepath.Clean).
+func resolveLinkTarget(sourceFile, target string) string {
+	// Strip any #anchor before resolving — the anchor is UI noise here.
+	clean := target
+	if i := strings.Index(clean, "#"); i >= 0 {
+		clean = clean[:i]
+	}
+	if filepath.IsAbs(clean) {
+		return filepath.Clean(clean)
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(sourceFile), clean))
 }
 
 // ApplyResult is a summary returned by Apply.
