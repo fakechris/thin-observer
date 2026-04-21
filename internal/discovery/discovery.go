@@ -33,6 +33,45 @@ type ProjectConfig struct {
 	Path string `yaml:"path"`
 }
 
+// SaveConfig writes the config to the given path, creating parent directories
+// as needed.
+func SaveConfig(path string, cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// AddProject appends a project to the config if not already present.
+// It returns true if the project was added, false if it was already registered.
+func AddProject(cfg *Config, name, absPath string) bool {
+	for _, p := range cfg.Projects {
+		expanded, _ := expand(p.Path)
+		if expanded == absPath {
+			return false
+		}
+	}
+	cfg.Projects = append(cfg.Projects, ProjectConfig{Name: name, Path: absPath})
+	return true
+}
+
+// RemoveProject removes a project matching name or path from the config.
+// It returns true if a project was removed.
+func RemoveProject(cfg *Config, key string) bool {
+	for i, p := range cfg.Projects {
+		expanded, _ := expand(p.Path)
+		if p.Name == key || p.Path == key || expanded == key || filepath.Base(expanded) == key {
+			cfg.Projects = append(cfg.Projects[:i], cfg.Projects[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

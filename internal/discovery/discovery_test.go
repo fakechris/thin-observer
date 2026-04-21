@@ -33,6 +33,72 @@ func TestExcludeSkipsMatch(t *testing.T) {
 	}
 }
 
+func TestSaveLoadConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	cfg := &Config{
+		Projects: []ProjectConfig{
+			{Name: "alpha", Path: "/tmp/alpha"},
+		},
+	}
+	if err := SaveConfig(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Projects) != 1 || got.Projects[0].Name != "alpha" {
+		t.Fatalf("round-trip failed: %+v", got.Projects)
+	}
+}
+
+func TestAddProjectDedup(t *testing.T) {
+	cfg := &Config{}
+	if !AddProject(cfg, "foo", "/tmp/foo") {
+		t.Fatal("first add should return true")
+	}
+	if AddProject(cfg, "foo2", "/tmp/foo") {
+		t.Fatal("duplicate path should return false")
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
+	}
+}
+
+func TestRemoveProject(t *testing.T) {
+	cfg := &Config{
+		Projects: []ProjectConfig{
+			{Name: "alpha", Path: "/tmp/alpha"},
+			{Name: "beta", Path: "/tmp/beta"},
+		},
+	}
+	if !RemoveProject(cfg, "alpha") {
+		t.Fatal("remove by name should return true")
+	}
+	if len(cfg.Projects) != 1 || cfg.Projects[0].Name != "beta" {
+		t.Fatalf("after remove: %+v", cfg.Projects)
+	}
+	if RemoveProject(cfg, "nonexistent") {
+		t.Fatal("removing nonexistent should return false")
+	}
+}
+
+func TestRemoveProjectByBasename(t *testing.T) {
+	cfg := &Config{
+		Projects: []ProjectConfig{
+			{Name: "my-app", Path: "/home/user/workspace/my-app"},
+		},
+	}
+	if !RemoveProject(cfg, "my-app") {
+		t.Fatal("remove by name should work")
+	}
+	if len(cfg.Projects) != 0 {
+		t.Fatalf("expected 0 projects, got %d", len(cfg.Projects))
+	}
+}
+
 func TestListWorktrees_RealGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
