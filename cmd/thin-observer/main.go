@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,6 +44,8 @@ func main() {
 	root.AddCommand(recapCmd())
 	root.AddCommand(taskCmd())
 	root.AddCommand(boardCmd())
+	root.AddCommand(addCmd())
+	root.AddCommand(removeCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -402,6 +405,78 @@ func resolveWorktree(ctx context.Context, s *store.Store, key string) (*store.Wo
 		}
 	}
 	return nil, fmt.Errorf("worktree not found: %s", key)
+}
+
+func addCmd() *cobra.Command {
+	var name string
+	c := &cobra.Command{
+		Use:   "add [path]",
+		Short: "Add a project to the config (default: current directory)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir := "."
+			if len(args) == 1 {
+				dir = args[0]
+			}
+			abs, err := filepath.Abs(dir)
+			if err != nil {
+				return err
+			}
+			if _, err := os.Stat(filepath.Join(abs, ".git")); err != nil {
+				return fmt.Errorf("%s is not a git repository", abs)
+			}
+			if name == "" {
+				name = filepath.Base(abs)
+			}
+			cfgPath := paths.ConfigFile()
+			cfg, err := discovery.LoadConfig(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			if !discovery.AddProject(cfg, name, abs) {
+				fmt.Fprintf(os.Stderr, "already registered: %s\n", abs)
+				return nil
+			}
+			if err := discovery.SaveConfig(cfgPath, cfg); err != nil {
+				return fmt.Errorf("save config: %w", err)
+			}
+			fmt.Fprintf(os.Stdout, "added project %q (%s) to %s\n", name, abs, cfgPath)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&name, "name", "", "project name (default: directory basename)")
+	return c
+}
+
+func removeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove <name-or-path>",
+		Short: "Remove a project from the config",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			key := args[0]
+			// If key looks like a relative/absolute path, resolve it.
+			if strings.Contains(key, string(filepath.Separator)) || key == "." {
+				abs, err := filepath.Abs(key)
+				if err == nil {
+					key = abs
+				}
+			}
+			cfgPath := paths.ConfigFile()
+			cfg, err := discovery.LoadConfig(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			if !discovery.RemoveProject(cfg, key) {
+				return fmt.Errorf("project not found in config: %s", key)
+			}
+			if err := discovery.SaveConfig(cfgPath, cfg); err != nil {
+				return fmt.Errorf("save config: %w", err)
+			}
+			fmt.Fprintf(os.Stdout, "removed %q from %s\n", key, cfgPath)
+			return nil
+		},
+	}
 }
 
 func newULID() string {

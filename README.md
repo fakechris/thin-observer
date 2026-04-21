@@ -31,13 +31,9 @@ go build -o thin-observer ./cmd/thin-observer
 ## Quick start
 
 ```bash
-# 1. Point it at your worktrees.
-mkdir -p ~/.config/thin-observer
-cat > ~/.config/thin-observer/config.yaml <<'EOF'
-projects:
-  - name: my-app
-    path: /path/to/repo
-EOF
+# 1. Register your repo.
+cd /path/to/repo
+thin-observer add
 
 # 2. Ingest what's there right now.
 thin-observer watch --once
@@ -56,6 +52,8 @@ thin-observer recap my-app
 
 | | |
 |---|---|
+| `thin-observer add [path]` | register a project (default: cwd) |
+| `thin-observer remove <name>` | unregister a project |
 | `thin-observer watch` | daemon: fsnotify plan files, ingest on change |
 | `thin-observer watch --once` | one-shot discovery + ingest, then exit |
 | `thin-observer status` | one-screen overview table of all worktrees |
