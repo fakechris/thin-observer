@@ -372,9 +372,21 @@ title: Phase 27 Closeout
 		t.Errorf("label = %q", l.Label)
 	}
 
-	// Re-ingest the root doc: ID must be stable, links must be replaced
-	// (not duplicated).
-	if _, err := in.Apply(context.Background(), w, d1); err != nil {
+	// Re-ingest the root doc with a changed body so Apply doesn't short-circuit
+	// on the raw-hash equality check. The plan_doc ID must stay stable and the
+	// link set must be replaced (not duplicated).
+	writeFile(t, taskPlan, `# Roadmap
+
+## TODO
+
+- [ ] See [Phase 27 plan](docs/plans/phase27.md)
+- [ ] Follow-up task added on re-ingest
+`)
+	d1b, err := parser.ParseFile(taskPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Apply(context.Background(), w, d1b); err != nil {
 		t.Fatal(err)
 	}
 	rootDoc2, err := s.PlanDocByWorktreeAndFile(ctx, w.ID, taskPlan)
@@ -384,7 +396,10 @@ title: Phase 27 Closeout
 	if rootDoc2.ID != rootDoc.ID {
 		t.Errorf("plan_doc ID mutated across re-ingest: %q vs %q", rootDoc2.ID, rootDoc.ID)
 	}
-	links2, _ := s.LinksFrom(ctx, rootDoc.ID)
+	links2, err := s.LinksFrom(ctx, rootDoc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(links2) != 1 {
 		t.Errorf("re-ingest duplicated links: got %d, want 1", len(links2))
 	}
