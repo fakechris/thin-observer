@@ -1,3 +1,5 @@
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This document describes the rejected Work Graph Protocol proposal. See [`../../REASONS-ARCHIVED.md`](../../REASONS-ARCHIVED.md) for why thin-observer took a different approach.
+
 # Claude Plugin Skeleton
 
 这是一个最小 Claude Code plugin skeleton，用于团队级共享 Work Graph Protocol。

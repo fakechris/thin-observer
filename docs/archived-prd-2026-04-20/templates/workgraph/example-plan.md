@@ -1,3 +1,5 @@
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This document describes the rejected Work Graph Protocol proposal. See [`../../REASONS-ARCHIVED.md`](../../REASONS-ARCHIVED.md) for why thin-observer took a different approach.
+
 ---
 protocol: work-graph/v0.1
 objective_id: OBJ-20260420-01

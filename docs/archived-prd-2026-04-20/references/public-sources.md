@@ -1,3 +1,5 @@
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This document describes the rejected Work Graph Protocol proposal. See [`../REASONS-ARCHIVED.md`](../REASONS-ARCHIVED.md) for why thin-observer took a different approach.
+
 # Public Sources
 
 下面这些公开资料在本包的设计里有直接影响。

@@ -1,3 +1,5 @@
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This document describes the rejected Work Graph Protocol proposal. See [`../REASONS-ARCHIVED.md`](../REASONS-ARCHIVED.md) for why thin-observer took a different approach.
+
 # Board Mapping and Design
 
 ## 1. 基本原则

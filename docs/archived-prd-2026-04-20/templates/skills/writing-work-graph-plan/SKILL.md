@@ -1,3 +1,5 @@
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This document describes the rejected Work Graph Protocol proposal. See [`../../../REASONS-ARCHIVED.md`](../../../REASONS-ARCHIVED.md) for why thin-observer took a different approach.
+
 ---
 name: writing-work-graph-plan
 description: Use when you need to create or substantially revise a tracked implementation plan for a multi-step task, before touching code. Use this when the work needs stable task refs, phases, lifecycle tracking, or board visibility.

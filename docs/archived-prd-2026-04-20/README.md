@@ -1,5 +1,11 @@
 # Work Graph Protocol + Linear-like Board Implementation Package
 
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This package describes a rejected proposal
+> that required cross-agent cooperation (`[T-xx]` refs, `planctl` CLI, MCP,
+> skill distribution, write-back board). thin-observer took a different route:
+> observer-side lineage inference with **zero agent cooperation**. Read
+> [`REASONS-ARCHIVED.md`](REASONS-ARCHIVED.md) before using anything here as a spec.
+
 这个包是给 coding agent 直接落地实现用的，不是单纯的讨论纪要。
 
 ## 这包里有什么

@@ -1,3 +1,5 @@
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This document describes the rejected Work Graph Protocol proposal. See [`../../../REASONS-ARCHIVED.md`](../../../REASONS-ARCHIVED.md) for why thin-observer took a different approach.
+
 ---
 name: using-work-graph
 description: Use when starting or reframing any multi-step engineering task that will need a tracked plan, stable task refs, blocker handling, validation, or board visibility. Also use before asking clarifying questions if there is a real chance the task will become a tracked workflow.

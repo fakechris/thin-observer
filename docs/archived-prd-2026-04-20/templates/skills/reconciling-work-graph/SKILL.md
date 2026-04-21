@@ -1,3 +1,5 @@
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This document describes the rejected Work Graph Protocol proposal. See [`../../../REASONS-ARCHIVED.md`](../../../REASONS-ARCHIVED.md) for why thin-observer took a different approach.
+
 ---
 name: reconciling-work-graph
 description: Use when a plan, task list, registry, or board appears out of sync; when tasks may have been renamed, split, merged, superseded, or dropped; or when markdown drift makes continuity uncertain.

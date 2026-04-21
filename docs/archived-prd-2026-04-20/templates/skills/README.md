@@ -1,3 +1,5 @@
+> ⚠ **ARCHIVED — NOT IMPLEMENTED.** This document describes the rejected Work Graph Protocol proposal. See [`../../REASONS-ARCHIVED.md`](../../REASONS-ARCHIVED.md) for why thin-observer took a different approach.
+
 # Skills Included
 
 本包建议拆成 4 个 skill，而不是一个大 skill。
