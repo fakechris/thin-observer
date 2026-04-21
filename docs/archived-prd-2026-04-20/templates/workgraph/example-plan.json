@@ -1,0 +1,43 @@
+{
+  "plan_id": "PLN-20260420-01",
+  "plan_rev": 4,
+  "tasks": {
+    "T-01": {
+      "task_uid": "tsk_01K0AAA",
+      "title_current": "Establish GraphQL schema subset",
+      "status": "done",
+      "aliases": [],
+      "last_seen_rev": 4
+    },
+    "T-02": {
+      "task_uid": "tsk_01K0AAB",
+      "title_current": "Define compatibility tests",
+      "status": "done",
+      "aliases": [],
+      "last_seen_rev": 4
+    },
+    "T-07": {
+      "task_uid": "tsk_01K0AAC",
+      "title_current": "Add authenticated API endpoints",
+      "status": "running",
+      "aliases": [
+        "Add API endpoints"
+      ],
+      "last_seen_rev": 4
+    },
+    "T-08": {
+      "task_uid": "tsk_01K0AAD",
+      "title_current": "Write integration tests",
+      "status": "ready",
+      "aliases": [],
+      "last_seen_rev": 4
+    },
+    "T-09": {
+      "task_uid": "tsk_01K0AAE",
+      "title_current": "Verify mutation parity",
+      "status": "ready",
+      "aliases": [],
+      "last_seen_rev": 4
+    }
+  }
+}

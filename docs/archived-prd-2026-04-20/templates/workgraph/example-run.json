@@ -1,0 +1,10 @@
+{
+  "run_id": "RUN-20260420-03",
+  "task_uid": "tsk_01K0AAC",
+  "agent_kind": "claude-code",
+  "worktree_ref": "wt/api-compat-3",
+  "session_ref": "session-abc",
+  "status": "active",
+  "started_at": "2026-04-20T19:00:00Z",
+  "last_activity_at": "2026-04-20T20:10:00Z"
+}

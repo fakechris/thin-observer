@@ -1,0 +1,84 @@
+{{define "body"}}
+<section class="task-detail">
+  <a class="back" href="/">← back to board</a>
+  <h1>{{.Task.CurrentTitle}}</h1>
+  <div class="meta-grid">
+    <div><dt>id</dt><dd><code>{{.Task.ID}}</code></dd></div>
+    <div><dt>status</dt><dd><span class="badge badge-{{statusBadge .Task.Status}}">{{.Task.Status}}</span></dd></div>
+    <div><dt>phase</dt><dd>{{if .Task.Phase}}{{.Task.Phase}}{{else}}—{{end}}</dd></div>
+    <div><dt>confidence</dt><dd>{{printf "%.2f" .Task.Confidence}}</dd></div>
+    <div><dt>worktree</dt><dd>{{if .Worktree}}{{.Worktree.Name}}<br><code>{{.Worktree.Path}}</code>{{else}}—{{end}}</dd></div>
+    <div><dt>source</dt><dd><code>{{.Task.SourceFile}}:{{.Task.SourceLine}}</code></dd></div>
+    <div><dt>first seen</dt><dd>{{.Task.FirstSeenAt.Format "2006-01-02 15:04"}}</dd></div>
+    <div><dt>last seen</dt><dd>{{.Task.LastSeenAt.Format "2006-01-02 15:04"}} ({{humanAge .Task.LastSeenAt}})</dd></div>
+  </div>
+
+  {{if .Task.Aliases}}
+  <h2>Aliases</h2>
+  <ul class="aliases">
+    {{range .Task.Aliases}}<li>{{.}}</li>{{end}}
+  </ul>
+  {{end}}
+
+  <h2>Lineage</h2>
+  <div class="lineage">
+    {{if .Lineage.Parents}}
+    <div class="lineage-block">
+      <h3>Parents</h3>
+      <ul>{{range .Lineage.Parents}}<li><a href="/task/{{.ID}}">{{.CurrentTitle}}</a></li>{{end}}</ul>
+    </div>{{end}}
+    {{if .Lineage.Children}}
+    <div class="lineage-block">
+      <h3>Children</h3>
+      <ul>{{range .Lineage.Children}}<li><a href="/task/{{.ID}}">{{.CurrentTitle}}</a></li>{{end}}</ul>
+    </div>{{end}}
+    {{if .Lineage.Renamed}}
+    <div class="lineage-block">
+      <h3>Renamed from</h3>
+      <p><a href="/task/{{.Lineage.Renamed}}">{{.Lineage.Renamed}}</a></p>
+    </div>{{end}}
+    {{if and (not .Lineage.Parents) (not .Lineage.Children) (not .Lineage.Renamed)}}
+    <p class="empty">no lineage recorded</p>
+    {{end}}
+  </div>
+
+  <h2>Events</h2>
+  <ol class="timeline">
+    {{range .Events}}
+    <li><time>{{.Timestamp.Format "2006-01-02 15:04:05"}}</time> <span class="etype">{{.Type}}</span></li>
+    {{else}}
+    <li class="empty">no events recorded</li>
+    {{end}}
+  </ol>
+
+  <h2>Manual override</h2>
+  <p class="help">Overrides live only in observer state. They never touch the plan file.
+  For <em>same / split-from / merged-from</em>, copy the related task ID from its detail page.</p>
+  <form method="POST" action="/override/{{.Task.ID}}">
+    <label>kind
+      <select name="kind" required>
+        <option value="mark_same">This is the same task as…</option>
+        <option value="mark_dropped">Mark dropped (not lost)</option>
+        <option value="mark_split_from">Split from another task</option>
+        <option value="mark_merged_from">Merged from other tasks</option>
+      </select>
+    </label>
+    <label>related task id
+      <input type="text" name="related_task_id" placeholder="required for same / split-from / merged-from">
+    </label>
+    <label>note
+      <input type="text" name="note" placeholder="optional — free-text context">
+    </label>
+    <button type="submit">Record override</button>
+  </form>
+
+  {{if .Overrides}}
+  <h3>Recorded overrides</h3>
+  <ul class="overrides">
+    {{range .Overrides}}
+    <li><time>{{.CreatedAt.Format "2006-01-02 15:04"}}</time> <strong>{{.Kind}}</strong> — {{.Note}}</li>
+    {{end}}
+  </ul>
+  {{end}}
+</section>
+{{end}}
