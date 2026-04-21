@@ -413,6 +413,13 @@ func (s *Server) handleOverride(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "related_task_id required for kind "+kind, http.StatusBadRequest)
 		return
 	}
+	// Self-reference is nonsense state: mark_same would make the task
+	// supersede itself, split/merge would make it its own lineage parent.
+	// Reject before writing, since overrides are append-only.
+	if relatedID != "" && relatedID == taskID {
+		http.Error(w, "related_task_id must differ from task id", http.StatusBadRequest)
+		return
+	}
 
 	ctx := r.Context()
 	// Existence checks *outside* the tx so we can return crisp 404/400s.

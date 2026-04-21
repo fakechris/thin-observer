@@ -83,23 +83,43 @@ func (h *Heuristic) Infer(old []ExistingTask, newItems []NewItem) []Decision {
 		newTokens[i] = tokenSet(n.Title)
 	}
 
-	// -- Pass 1: exact match (title + phase).
+	// -- Pass 1: exact title match. Same phase → confidence 1.0; if nothing
+	// same-phase matches, fall back to cross-phase with a penalty so a task
+	// reorganized from "Pending" to "In Progress" (common agent behavior)
+	// doesn't get orphaned into NewTask.
 	for ni, n := range newItems {
 		if usedNew[ni] {
 			continue
 		}
+		matched := -1
+		conf := 1.0
 		for oi, o := range old {
 			if usedOld[oi] {
 				continue
 			}
 			if o.Title == n.Title && phaseEq(o.Phase, n.Phase) {
-				decisions = append(decisions, Decision{
-					Kind: DecisionSameTask, OldID: o.ID, NewIndex: ni, Confidence: 1.0,
-				})
-				usedOld[oi] = true
-				usedNew[ni] = true
+				matched = oi
 				break
 			}
+		}
+		if matched < 0 {
+			for oi, o := range old {
+				if usedOld[oi] {
+					continue
+				}
+				if o.Title == n.Title {
+					matched = oi
+					conf = 1.0 - h.PhaseChangePenalty
+					break
+				}
+			}
+		}
+		if matched >= 0 {
+			decisions = append(decisions, Decision{
+				Kind: DecisionSameTask, OldID: old[matched].ID, NewIndex: ni, Confidence: conf,
+			})
+			usedOld[matched] = true
+			usedNew[ni] = true
 		}
 	}
 

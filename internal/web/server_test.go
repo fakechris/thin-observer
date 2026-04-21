@@ -132,6 +132,31 @@ func TestOverrideRejectsCrossOrigin(t *testing.T) {
 	}
 }
 
+func TestOverrideRejectsSelfReference(t *testing.T) {
+	srv, s, w := testServer(t)
+	tasks, _ := s.TasksByWorktree(context.Background(), w.ID)
+	if len(tasks) == 0 {
+		t.Fatal("expected seeded tasks")
+	}
+	taskID := tasks[0].ID
+
+	form := url.Values{}
+	form.Set("kind", "mark_same")
+	form.Set("related_task_id", taskID) // same as path param — nonsense
+	r := httptest.NewRequest("POST", "/override/"+taskID, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "http://"+r.Host)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("self-ref override status=%d want 400", rec.Code)
+	}
+	overs, _ := s.OverridesForTask(context.Background(), taskID)
+	if len(overs) != 0 {
+		t.Errorf("self-ref POST still wrote %d overrides", len(overs))
+	}
+}
+
 func TestOverrideMarkSameSetsSupersedes(t *testing.T) {
 	srv, s, w := testServer(t)
 	ctx := context.Background()

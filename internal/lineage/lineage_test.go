@@ -122,16 +122,45 @@ func TestMerge_TwoIntoOne(t *testing.T) {
 	}
 }
 
-func TestRenameAcrossPhasesRejected(t *testing.T) {
-	// Same title almost identical BUT different phase → should not rename.
+func TestExactMatchAcrossPhases(t *testing.T) {
+	// Same title, phase moved. Agents routinely reorganize phases without
+	// renaming tasks — we must bind them as SameTask with a penalty rather
+	// than let the old task fall into "lost".
 	h := New()
 	old := []ExistingTask{mkOld("A", "Install dependencies", "Stage 1")}
 	now := []NewItem{mkNew("Install dependencies", "Stage 2")}
 	ds := h.Infer(old, now)
-	for _, d := range ds {
-		if d.Kind == DecisionSameTask || d.Kind == DecisionRename {
-			t.Fatalf("did not expect match across phases, got %+v", d)
-		}
+	if len(ds) != 1 {
+		t.Fatalf("expected 1 decision, got %d (%+v)", len(ds), ds)
+	}
+	if ds[0].Kind != DecisionSameTask || ds[0].OldID != "A" {
+		t.Fatalf("expected cross-phase SameTask, got %+v", ds[0])
+	}
+	// Confidence should reflect the phase penalty.
+	if ds[0].Confidence >= 1.0 || ds[0].Confidence < 0.7 {
+		t.Fatalf("expected cross-phase conf in [0.7,1.0), got %.2f", ds[0].Confidence)
+	}
+}
+
+func TestSamePhaseBeatsCrossPhase(t *testing.T) {
+	// Two old tasks with the same title exist in different phases. The new
+	// task is in one of those phases — we must pick the same-phase candidate,
+	// not the cross-phase one.
+	h := New()
+	old := []ExistingTask{
+		mkOld("A", "Install dependencies", "Stage 1"),
+		mkOld("B", "Install dependencies", "Stage 2"),
+	}
+	now := []NewItem{mkNew("Install dependencies", "Stage 2")}
+	ds := h.Infer(old, now)
+	if len(ds) != 1 || ds[0].Kind != DecisionSameTask {
+		t.Fatalf("unexpected decisions: %+v", ds)
+	}
+	if ds[0].OldID != "B" {
+		t.Fatalf("expected same-phase B to win over cross-phase A, got OldID=%q", ds[0].OldID)
+	}
+	if ds[0].Confidence != 1.0 {
+		t.Fatalf("expected same-phase conf 1.0, got %.2f", ds[0].Confidence)
 	}
 }
 
