@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/agnivade/levenshtein"
 )
@@ -262,6 +263,8 @@ func (h *Heuristic) Infer(old []ExistingTask, newItems []NewItem) []Decision {
 }
 
 // ratio returns 1 - (distance / maxLen). Returns 1.0 when both strings are empty.
+// Length is measured in runes, not bytes, so multi-byte UTF-8 characters
+// (CJK, emoji, accented Latin) produce the same ratio regardless of encoding.
 func ratio(a, b string) float64 {
 	if a == "" && b == "" {
 		return 1.0
@@ -270,9 +273,9 @@ func ratio(a, b string) float64 {
 		return 0.0
 	}
 	d := levenshtein.ComputeDistance(a, b)
-	n := len(a)
-	if len(b) > n {
-		n = len(b)
+	n := utf8.RuneCountInString(a)
+	if m := utf8.RuneCountInString(b); m > n {
+		n = m
 	}
 	return 1.0 - float64(d)/float64(n)
 }

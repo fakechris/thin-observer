@@ -365,6 +365,24 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 
 // ---- Override POST ----
 
+// allowedOverrideKinds matches the options in templates/task.html. Keeping the
+// whitelist here rather than trusting form input prevents clients from writing
+// garbage kinds that the ingester would later ignore.
+var allowedOverrideKinds = map[string]bool{
+	"mark_same":        true,
+	"mark_dropped":     true,
+	"mark_split_from":  true,
+	"mark_merged_from": true,
+}
+
+// kindsNeedingRelated are override kinds that describe a relationship to
+// another task. For these, related_task_id is mandatory.
+var kindsNeedingRelated = map[string]bool{
+	"mark_same":        true,
+	"mark_split_from":  true,
+	"mark_merged_from": true,
+}
+
 func (s *Server) handleOverride(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -373,18 +391,41 @@ func (s *Server) handleOverride(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("task_id")
 	kind := r.FormValue("kind")
 	note := r.FormValue("note")
+	relatedID := strings.TrimSpace(r.FormValue("related_task_id"))
 	if kind == "" {
 		http.Error(w, "kind required", http.StatusBadRequest)
+		return
+	}
+	if !allowedOverrideKinds[kind] {
+		http.Error(w, "unknown override kind: "+kind, http.StatusBadRequest)
+		return
+	}
+	if kindsNeedingRelated[kind] && relatedID == "" {
+		http.Error(w, "related_task_id required for kind "+kind, http.StatusBadRequest)
 		return
 	}
 	if _, err := s.store.TaskByID(r.Context(), taskID); err != nil {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), ulid.DefaultEntropy()).String()
-	if err := s.store.InsertOverride(r.Context(), store.Override{
-		ID: id, TaskID: taskID, Kind: kind, Note: note,
-	}); err != nil {
+	if relatedID != "" {
+		if _, err := s.store.TaskByID(r.Context(), relatedID); err != nil {
+			http.Error(w, "related task not found: "+relatedID, http.StatusBadRequest)
+			return
+		}
+	}
+	u, err := ulid.New(ulid.Timestamp(time.Now()), ulid.DefaultEntropy())
+	if err != nil {
+		s.internalError(w, fmt.Errorf("ulid: %w", err))
+		return
+	}
+	o := store.Override{
+		ID: u.String(), TaskID: taskID, Kind: kind, Note: note,
+	}
+	if relatedID != "" {
+		o.Data = map[string]any{"related_task_id": relatedID}
+	}
+	if err := s.store.InsertOverride(r.Context(), o); err != nil {
 		s.internalError(w, err)
 		return
 	}

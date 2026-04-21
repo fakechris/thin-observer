@@ -34,6 +34,9 @@ type Watcher struct {
 	period   time.Duration
 	// worktrees tracks what we're watching; key is worktreePath, value is dirs added
 	worktrees map[string]map[string]struct{}
+	// wg tracks the Run goroutine so Close can wait for it to exit before
+	// closing Events, preventing send-on-closed-channel panics.
+	wg sync.WaitGroup
 }
 
 func New(logger *slog.Logger) (*Watcher, error) {
@@ -51,9 +54,23 @@ func New(logger *slog.Logger) (*Watcher, error) {
 	}, nil
 }
 
-// Close shuts down the watcher and its channel.
+// Start runs the event loop in a tracked goroutine. Close blocks on it.
+// Prefer this over calling Run directly, so Close can safely close Events.
+func (w *Watcher) Start(ctx context.Context) {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		w.Run(ctx)
+	}()
+}
+
+// Close shuts down the watcher. It closes the underlying fsnotify watcher
+// (which makes Run exit on the next loop iteration), waits for any Run
+// goroutine started via Start() to finish, then closes Events. Safe to call
+// when Run was never started — wg.Wait returns immediately.
 func (w *Watcher) Close() error {
 	err := w.fs.Close()
+	w.wg.Wait()
 	close(w.Events)
 	return err
 }

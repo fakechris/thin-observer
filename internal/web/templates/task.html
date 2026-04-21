@@ -52,7 +52,8 @@
   </ol>
 
   <h2>Manual override</h2>
-  <p class="help">Overrides live only in observer state. They never touch the plan file.</p>
+  <p class="help">Overrides live only in observer state. They never touch the plan file.
+  For <em>same / split-from / merged-from</em>, copy the related task ID from its detail page.</p>
   <form method="POST" action="/override/{{.Task.ID}}">
     <label>kind
       <select name="kind" required>
@@ -61,6 +62,9 @@
         <option value="mark_split_from">Split from another task</option>
         <option value="mark_merged_from">Merged from other tasks</option>
       </select>
+    </label>
+    <label>related task id
+      <input type="text" name="related_task_id" placeholder="required for same / split-from / merged-from">
     </label>
     <label>note
       <input type="text" name="note" placeholder="optional — free-text context">

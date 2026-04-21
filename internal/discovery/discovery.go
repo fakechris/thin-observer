@@ -162,6 +162,13 @@ func walkRoots(root string, exclude []string, fn func(repoRoot string)) {
 		if !d.IsDir() {
 			return nil
 		}
+		// Never descend into .git / node_modules / similar noise — these are
+		// not git repos themselves and walking them wastes a lot of syscalls.
+		base := filepath.Base(p)
+		if base == ".git" || base == "node_modules" || base == ".venv" ||
+			base == "__pycache__" {
+			return filepath.SkipDir
+		}
 		for _, ex := range exclude {
 			if ex != "" && strings.Contains(p, ex) {
 				return filepath.SkipDir

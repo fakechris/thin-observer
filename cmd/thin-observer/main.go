@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -58,9 +59,17 @@ func parseCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			enc := json.NewEncoder(os.Stdout)
+			w := io.Writer(os.Stdout)
+			if out != "" {
+				f, err := os.Create(out)
+				if err != nil {
+					return fmt.Errorf("create %s: %w", out, err)
+				}
+				defer f.Close()
+				w = f
+			}
+			enc := json.NewEncoder(w)
 			enc.SetIndent("", "  ")
-			_ = out
 			return enc.Encode(doc)
 		},
 	}
@@ -139,7 +148,7 @@ func watchCmd() *cobra.Command {
 				return nil
 			}
 
-			go wch.Run(ctx)
+			wch.Start(ctx)
 
 			logger.Info("watch.running", "worktrees", len(wtByPath))
 			for {
