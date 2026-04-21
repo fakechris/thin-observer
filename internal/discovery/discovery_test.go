@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,100 @@ func TestExcludeSkipsMatch(t *testing.T) {
 	walkRoots(dir, []string{"node_modules"}, func(r string) { found = append(found, r) })
 	if len(found) != 0 {
 		t.Fatalf("expected nothing, got %v", found)
+	}
+}
+
+func TestSaveLoadConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	cfg := &Config{
+		Projects: []ProjectConfig{
+			{Name: "alpha", Path: "/tmp/alpha"},
+		},
+	}
+	if err := SaveConfig(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Projects) != 1 || got.Projects[0].Name != "alpha" {
+		t.Fatalf("round-trip failed: %+v", got.Projects)
+	}
+}
+
+func TestAddProjectDedup(t *testing.T) {
+	cfg := &Config{}
+	if err := AddProject(cfg, "foo", "/tmp/foo"); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := AddProject(cfg, "foo2", "/tmp/foo"); !errors.Is(err, ErrProjectAlreadyRegistered) {
+		t.Fatalf("duplicate path err = %v, want %v", err, ErrProjectAlreadyRegistered)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
+	}
+}
+
+func TestAddProjectRejectsDuplicateName(t *testing.T) {
+	cfg := &Config{}
+	if err := AddProject(cfg, "foo", "/tmp/foo"); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := AddProject(cfg, "foo", "/tmp/bar"); !errors.Is(err, ErrProjectAlreadyRegistered) {
+		t.Fatalf("duplicate name err = %v, want %v", err, ErrProjectAlreadyRegistered)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
+	}
+}
+
+func TestRemoveProject(t *testing.T) {
+	cfg := &Config{
+		Projects: []ProjectConfig{
+			{Name: "alpha", Path: "/tmp/alpha"},
+			{Name: "beta", Path: "/tmp/beta"},
+		},
+	}
+	if err := RemoveProject(cfg, "alpha"); err != nil {
+		t.Fatalf("remove by name: %v", err)
+	}
+	if len(cfg.Projects) != 1 || cfg.Projects[0].Name != "beta" {
+		t.Fatalf("after remove: %+v", cfg.Projects)
+	}
+	if err := RemoveProject(cfg, "nonexistent"); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("remove nonexistent err = %v, want %v", err, ErrProjectNotFound)
+	}
+}
+
+func TestRemoveProjectByBasename(t *testing.T) {
+	cfg := &Config{
+		Projects: []ProjectConfig{
+			{Name: "custom-name", Path: "/home/user/workspace/my-app"},
+		},
+	}
+	if err := RemoveProject(cfg, "my-app"); err != nil {
+		t.Fatalf("remove by basename: %v", err)
+	}
+	if len(cfg.Projects) != 0 {
+		t.Fatalf("expected 0 projects, got %d", len(cfg.Projects))
+	}
+}
+
+func TestRemoveProjectByBasenameRequiresUniqueMatch(t *testing.T) {
+	cfg := &Config{
+		Projects: []ProjectConfig{
+			{Name: "alpha", Path: "/home/user/a/my-app"},
+			{Name: "beta", Path: "/home/user/b/my-app"},
+		},
+	}
+	if err := RemoveProject(cfg, "my-app"); !errors.Is(err, ErrProjectAmbiguous) {
+		t.Fatalf("remove ambiguous basename err = %v, want %v", err, ErrProjectAmbiguous)
+	}
+	if len(cfg.Projects) != 2 {
+		t.Fatalf("ambiguous remove should not mutate projects, got %+v", cfg.Projects)
 	}
 }
 
