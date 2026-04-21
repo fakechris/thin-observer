@@ -98,7 +98,10 @@ title: Phase 27 Closeout
 	if taskDoc == nil || phaseDoc == nil {
 		t.Fatalf("plans missing: %+v", docs)
 	}
-	links, _ := s.LinksFrom(ctx, taskDoc.ID)
+	links, err := s.LinksFrom(ctx, taskDoc.ID)
+	if err != nil {
+		t.Fatalf("LinksFrom: %v", err)
+	}
 	if len(links) != 1 {
 		t.Fatalf("links from root = %d, want 1", len(links))
 	}
@@ -107,7 +110,10 @@ title: Phase 27 Closeout
 	}
 
 	// Task partition: 2 tasks on root, 2 on phase plan.
-	allTasks, _ := s.TasksByWorktree(ctx, wt.ID)
+	allTasks, err := s.TasksByWorktree(ctx, wt.ID)
+	if err != nil {
+		t.Fatalf("TasksByWorktree: %v", err)
+	}
 	byFile := map[string]int{}
 	for _, t := range allTasks {
 		byFile[t.SourceFile]++
@@ -121,13 +127,19 @@ title: Phase 27 Closeout
 
 	// commit_sha on latest snapshot matches HEAD.
 	head := gitHead(t, root)
-	taskSnap, _ := s.LatestSnapshot(ctx, wt.ID, taskPlan)
+	taskSnap, err := s.LatestSnapshot(ctx, wt.ID, taskPlan)
+	if err != nil {
+		t.Fatalf("LatestSnapshot: %v", err)
+	}
 	if taskSnap == nil || taskSnap.CommitSHA != head {
-		t.Errorf("task_plan snapshot commit_sha = %q, want %q", snapSHA(taskSnap), head)
+		t.Fatalf("task_plan snapshot commit_sha = %q, want %q", snapSHA(taskSnap), head)
 	}
 
 	// task_revision count per snapshot matches live tasks in that file.
-	revs, _ := s.TaskRevisionsBySnapshot(ctx, taskSnap.ID)
+	revs, err := s.TaskRevisionsBySnapshot(ctx, taskSnap.ID)
+	if err != nil {
+		t.Fatalf("TaskRevisionsBySnapshot: %v", err)
+	}
 	if len(revs) != 2 {
 		t.Errorf("revisions for task_plan snapshot = %d, want 2", len(revs))
 	}
@@ -199,7 +211,10 @@ title: Phase 27 Closeout
 	ingestAll(t, ctx, in, wt)
 
 	// Live task should now be "Ship observer v2".
-	afterTasks, _ := s.TasksByWorktree(ctx, wt.ID)
+	afterTasks, err := s.TasksByWorktree(ctx, wt.ID)
+	if err != nil {
+		t.Fatalf("TasksByWorktree post-edit: %v", err)
+	}
 	var liveRenamed, liveNew bool
 	for _, tk := range afterTasks {
 		if tk.CurrentTitle == "Ship observer v2" {
@@ -218,7 +233,10 @@ title: Phase 27 Closeout
 
 	// But the first snapshot's revisions must be unchanged — this is the
 	// core guarantee Phase 6 exists to provide.
-	revsAgain, _ := s.TaskRevisionsBySnapshot(ctx, taskSnap.ID)
+	revsAgain, err := s.TaskRevisionsBySnapshot(ctx, taskSnap.ID)
+	if err != nil {
+		t.Fatalf("TaskRevisionsBySnapshot post-edit: %v", err)
+	}
 	frozenTitles := map[string]string{}
 	for _, r := range revsAgain {
 		frozenTitles[r.TaskID] = r.Title

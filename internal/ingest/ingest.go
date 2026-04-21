@@ -74,6 +74,11 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 		return nil, fmt.Errorf("marshal phases: %w", err)
 	}
 
+	// Shell out to `git rev-parse HEAD` before opening the write transaction —
+	// SQLite only allows one writer at a time, so holding the tx across a
+	// subprocess (up to 2s timeout) would block every other Apply/override.
+	commitSHA := in.resolveHeadSHA(ctx, worktree.Path)
+
 	var result ApplyResult
 	result.SnapshotID = snapID
 
@@ -93,7 +98,7 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 			Timestamp:  now,
 			RawHash:    doc.RawHash,
 			PhasesJSON: string(phasesJSON),
-			CommitSHA:  in.resolveHeadSHA(ctx, worktree.Path),
+			CommitSHA:  commitSHA,
 		}
 		if err := tx.InsertSnapshot(ctx, snap); err != nil {
 			return fmt.Errorf("insert snapshot: %w", err)
@@ -198,6 +203,7 @@ func (in *Ingester) applyInTx(
 				Type:       "task_updated",
 				TaskID:     old.ID,
 				WorktreeID: worktree.ID,
+				SnapshotID: snapID,
 			}); err != nil {
 				return err
 			}
@@ -231,6 +237,7 @@ func (in *Ingester) applyInTx(
 				Type:       "task_renamed",
 				TaskID:     old.ID,
 				WorktreeID: worktree.ID,
+				SnapshotID: snapID,
 				Data:       map[string]any{"from": old.Aliases, "to": newTitle, "confidence": d.Confidence},
 			}); err != nil {
 				return err
@@ -261,6 +268,7 @@ func (in *Ingester) applyInTx(
 				Type:       "task_created",
 				TaskID:     t.ID,
 				WorktreeID: worktree.ID,
+				SnapshotID: snapID,
 				Data:       map[string]any{"title": t.CurrentTitle, "phase": t.Phase},
 			}); err != nil {
 				return err
@@ -320,6 +328,7 @@ func (in *Ingester) applyInTx(
 				Type:       "task_split_inferred",
 				TaskID:     parent.ID,
 				WorktreeID: worktree.ID,
+				SnapshotID: snapID,
 				Data:       map[string]any{"children": childIDs, "confidence": d.Confidence},
 			}); err != nil {
 				return err
@@ -368,6 +377,7 @@ func (in *Ingester) applyInTx(
 				Type:       "task_merge_inferred",
 				TaskID:     child.ID,
 				WorktreeID: worktree.ID,
+				SnapshotID: snapID,
 				Data:       map[string]any{"parents": d.OldIDs, "confidence": d.Confidence},
 			}); err != nil {
 				return err
@@ -393,6 +403,7 @@ func (in *Ingester) applyInTx(
 				Type:       "task_lost",
 				TaskID:     e.ID,
 				WorktreeID: worktree.ID,
+				SnapshotID: snapID,
 			}); err != nil {
 				return err
 			}
@@ -409,6 +420,7 @@ func (in *Ingester) applyInTx(
 		Timestamp:  now,
 		Type:       "plan_synced",
 		WorktreeID: worktree.ID,
+		SnapshotID: snapID,
 		Data: map[string]any{
 			"source_file": doc.SourceFile,
 			"snapshot_id": snapID,
@@ -471,18 +483,23 @@ func writeTaskRevisions(
 				t.ID, t.ProjectID, worktree.ProjectID)
 		}
 		rev := store.TaskRevision{
-			ID:         newULID(now),
-			SnapshotID: snapID,
-			TaskID:     t.ID,
-			WorktreeID: worktree.ID,
-			ProjectID:  t.ProjectID,
-			SourceFile: t.SourceFile,
-			Title:      t.CurrentTitle,
-			Phase:      t.Phase,
-			Status:     t.Status,
-			Confidence: t.Confidence,
-			SourceLine: t.SourceLine,
-			RecordedAt: now,
+			ID:          newULID(now),
+			SnapshotID:  snapID,
+			TaskID:      t.ID,
+			WorktreeID:  worktree.ID,
+			ProjectID:   t.ProjectID,
+			SourceFile:  t.SourceFile,
+			Title:       t.CurrentTitle,
+			Phase:       t.Phase,
+			Status:      t.Status,
+			Confidence:  t.Confidence,
+			SourceLine:  t.SourceLine,
+			Aliases:     t.Aliases,
+			RenamedFrom: t.RenamedFrom,
+			SplitFrom:   t.SplitFrom,
+			MergedFrom:  t.MergedFrom,
+			Supersedes:  t.Supersedes,
+			RecordedAt:  now,
 		}
 		if err := tx.InsertTaskRevision(ctx, rev); err != nil {
 			return fmt.Errorf("insert task_revision: %w", err)

@@ -267,10 +267,16 @@ func (s *Server) handleKanban(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "plan not found: "+selectedPlanID, http.StatusNotFound)
 			return
 		}
-		// When a project filter is set, the plan must belong to it.
+		// When a project filter is set, the plan must belong to it. Keep
+		// a real DB error distinct from a scope mismatch — swallowing the
+		// former behind "plan does not belong to project" obscures outages.
 		if selectedProjectID != "" {
 			wt, err := s.store.WorktreeByID(ctx, pd.WorktreeID)
-			if err != nil || wt.ProjectID != selectedProjectID {
+			if err != nil {
+				s.internalError(w, fmt.Errorf("lookup worktree for plan %s: %w", pd.ID, err))
+				return
+			}
+			if wt.ProjectID != selectedProjectID {
 				http.Error(w, "plan does not belong to project", http.StatusBadRequest)
 				return
 			}

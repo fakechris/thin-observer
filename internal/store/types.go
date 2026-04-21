@@ -57,6 +57,7 @@ type Event struct {
 	Type       string
 	TaskID     string
 	WorktreeID string
+	SnapshotID string
 	Data       map[string]any
 }
 
@@ -90,18 +91,23 @@ type PlanLink struct {
 // denormalized (matches the worktree's project at record time) so a
 // project-scoped timeline can be served without a join.
 type TaskRevision struct {
-	ID         string
-	SnapshotID string
-	TaskID     string
-	WorktreeID string
-	ProjectID  string
-	SourceFile string
-	Title      string
-	Phase      string
-	Status     string
-	Confidence float64
-	SourceLine int
-	RecordedAt time.Time
+	ID          string
+	SnapshotID  string
+	TaskID      string
+	WorktreeID  string
+	ProjectID   string
+	SourceFile  string
+	Title       string
+	Phase       string
+	Status      string
+	Confidence  float64
+	SourceLine  int
+	Aliases     []string
+	RenamedFrom string
+	SplitFrom   []string
+	MergedFrom  []string
+	Supersedes  string
+	RecordedAt  time.Time
 }
 
 type Override struct {

@@ -293,19 +293,14 @@ func (s *Store) ListSnapshots(ctx context.Context, worktreeID string, limit int)
 }
 
 // EventsBySnapshot returns events produced during the ingest that created the
-// given snapshot. Events don't carry snapshot_id directly; instead they're
-// matched by (worktree_id, timestamp) which is the same `now` value the
-// ingester threaded through every write in its transaction.
+// given snapshot. Events carry snapshot_id directly (set by the ingester), so
+// this is a straightforward FK lookup — no timestamp-collision risk.
 func (s *Store) EventsBySnapshot(ctx context.Context, snapshotID string) ([]Event, error) {
-	snap, err := s.SnapshotByID(ctx, snapshotID)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := s.exec.QueryContext(ctx, `
-		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), data_json
+		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), COALESCE(snapshot_id, ''), data_json
 		FROM event
-		WHERE worktree_id = ? AND timestamp = ?
-		ORDER BY id`, snap.WorktreeID, snap.Timestamp.Format(time.RFC3339Nano))
+		WHERE snapshot_id = ?
+		ORDER BY id`, snapshotID)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +309,7 @@ func (s *Store) EventsBySnapshot(ctx context.Context, snapshotID string) ([]Even
 	for rows.Next() {
 		var e Event
 		var ts, data string
-		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &data); err != nil {
+		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &e.SnapshotID, &data); err != nil {
 			return nil, err
 		}
 		e.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
@@ -487,16 +482,16 @@ func (s *Store) InsertEvent(ctx context.Context, e Event) error {
 		return fmt.Errorf("marshal event data: %w", err)
 	}
 	_, err = s.exec.ExecContext(ctx, `
-		INSERT INTO event (id, timestamp, type, task_id, worktree_id, data_json)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO event (id, timestamp, type, task_id, worktree_id, snapshot_id, data_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, e.ID, e.Timestamp.Format(time.RFC3339Nano), e.Type,
-		nilIfEmpty(e.TaskID), nilIfEmpty(e.WorktreeID), string(data))
+		nilIfEmpty(e.TaskID), nilIfEmpty(e.WorktreeID), nilIfEmpty(e.SnapshotID), string(data))
 	return err
 }
 
 func (s *Store) EventsForTask(ctx context.Context, taskID string) ([]Event, error) {
 	rows, err := s.exec.QueryContext(ctx, `
-		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), data_json
+		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), COALESCE(snapshot_id, ''), data_json
 		FROM event WHERE task_id = ? ORDER BY timestamp`, taskID)
 	if err != nil {
 		return nil, err
@@ -506,7 +501,7 @@ func (s *Store) EventsForTask(ctx context.Context, taskID string) ([]Event, erro
 	for rows.Next() {
 		var e Event
 		var ts, data string
-		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &data); err != nil {
+		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &e.SnapshotID, &data); err != nil {
 			return nil, err
 		}
 		e.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
@@ -518,7 +513,7 @@ func (s *Store) EventsForTask(ctx context.Context, taskID string) ([]Event, erro
 
 func (s *Store) RecentEvents(ctx context.Context, limit int) ([]Event, error) {
 	rows, err := s.exec.QueryContext(ctx, `
-		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), data_json
+		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), COALESCE(snapshot_id, ''), data_json
 		FROM event ORDER BY timestamp DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -528,7 +523,7 @@ func (s *Store) RecentEvents(ctx context.Context, limit int) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var ts, data string
-		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &data); err != nil {
+		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &e.SnapshotID, &data); err != nil {
 			return nil, err
 		}
 		e.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
@@ -721,30 +716,68 @@ func (s *Store) InsertTaskRevision(ctx context.Context, r TaskRevision) error {
 	if r.Confidence == 0 {
 		r.Confidence = 1.0
 	}
-	_, err := s.exec.ExecContext(ctx, `
+	// Normalize nil slices to [] so schema defaults and JSON round-trip are
+	// stable — a nil slice marshals to "null" which breaks unmarshal into []string.
+	if r.Aliases == nil {
+		r.Aliases = []string{}
+	}
+	if r.SplitFrom == nil {
+		r.SplitFrom = []string{}
+	}
+	if r.MergedFrom == nil {
+		r.MergedFrom = []string{}
+	}
+	aliases, err := json.Marshal(r.Aliases)
+	if err != nil {
+		return fmt.Errorf("marshal aliases: %w", err)
+	}
+	splitFrom, err := json.Marshal(r.SplitFrom)
+	if err != nil {
+		return fmt.Errorf("marshal split_from: %w", err)
+	}
+	mergedFrom, err := json.Marshal(r.MergedFrom)
+	if err != nil {
+		return fmt.Errorf("marshal merged_from: %w", err)
+	}
+	_, err = s.exec.ExecContext(ctx, `
 		INSERT INTO task_revision (
 			id, snapshot_id, task_id, worktree_id, project_id,
-			source_file, title, phase, status, confidence, source_line, recorded_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			source_file, title, phase, status, confidence, source_line,
+			aliases_json, renamed_from, split_from_json, merged_from_json, supersedes,
+			recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, r.ID, r.SnapshotID, r.TaskID, r.WorktreeID, r.ProjectID,
 		r.SourceFile, r.Title, nilIfEmpty(r.Phase), r.Status, r.Confidence, r.SourceLine,
+		string(aliases), nilIfEmpty(r.RenamedFrom), string(splitFrom), string(mergedFrom), nilIfEmpty(r.Supersedes),
 		r.RecordedAt.Format(time.RFC3339Nano))
 	return err
 }
 
 const taskRevisionSelectSQL = `SELECT
 	id, snapshot_id, task_id, worktree_id, project_id,
-	source_file, title, COALESCE(phase, ''), status, confidence, source_line, recorded_at
+	source_file, title, COALESCE(phase, ''), status, confidence, source_line,
+	aliases_json, COALESCE(renamed_from, ''), split_from_json, merged_from_json, COALESCE(supersedes, ''),
+	recorded_at
 FROM task_revision`
 
 func scanTaskRevision(r scanner) (*TaskRevision, error) {
 	var tr TaskRevision
-	var recorded string
+	var aliases, splitFrom, mergedFrom, recorded string
 	if err := r.Scan(
 		&tr.ID, &tr.SnapshotID, &tr.TaskID, &tr.WorktreeID, &tr.ProjectID,
 		&tr.SourceFile, &tr.Title, &tr.Phase, &tr.Status, &tr.Confidence, &tr.SourceLine,
+		&aliases, &tr.RenamedFrom, &splitFrom, &mergedFrom, &tr.Supersedes,
 		&recorded); err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal([]byte(aliases), &tr.Aliases); err != nil {
+		return nil, fmt.Errorf("unmarshal aliases: %w", err)
+	}
+	if err := json.Unmarshal([]byte(splitFrom), &tr.SplitFrom); err != nil {
+		return nil, fmt.Errorf("unmarshal split_from: %w", err)
+	}
+	if err := json.Unmarshal([]byte(mergedFrom), &tr.MergedFrom); err != nil {
+		return nil, fmt.Errorf("unmarshal merged_from: %w", err)
 	}
 	tr.RecordedAt, _ = time.Parse(time.RFC3339Nano, recorded)
 	return &tr, nil

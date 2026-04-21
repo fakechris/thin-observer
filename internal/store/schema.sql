@@ -69,16 +69,18 @@ CREATE INDEX IF NOT EXISTS idx_task_project  ON task(project_id);
 CREATE INDEX IF NOT EXISTS idx_task_status   ON task(status);
 
 CREATE TABLE IF NOT EXISTS event (
-    id         TEXT PRIMARY KEY,
-    timestamp  TEXT NOT NULL,
-    type       TEXT NOT NULL,
-    task_id    TEXT,
+    id          TEXT PRIMARY KEY,
+    timestamp   TEXT NOT NULL,
+    type        TEXT NOT NULL,
+    task_id     TEXT,
     worktree_id TEXT,
-    data_json  TEXT NOT NULL DEFAULT '{}'
+    snapshot_id TEXT REFERENCES snapshot(id),
+    data_json   TEXT NOT NULL DEFAULT '{}'
 );
 
-CREATE INDEX IF NOT EXISTS idx_event_time ON event(timestamp);
-CREATE INDEX IF NOT EXISTS idx_event_task ON event(task_id);
+CREATE INDEX IF NOT EXISTS idx_event_time     ON event(timestamp);
+CREATE INDEX IF NOT EXISTS idx_event_task     ON event(task_id);
+CREATE INDEX IF NOT EXISTS idx_event_snapshot ON event(snapshot_id);
 
 CREATE TABLE IF NOT EXISTS override (
     id          TEXT PRIMARY KEY,
@@ -128,18 +130,25 @@ CREATE INDEX IF NOT EXISTS idx_plan_link_to   ON plan_link(to_plan_id);
 -- row mutates in place and loses history otherwise. project_id is
 -- denormalized on purpose so timelines can be scoped without a join.
 CREATE TABLE IF NOT EXISTS task_revision (
-    id           TEXT PRIMARY KEY,
-    snapshot_id  TEXT NOT NULL REFERENCES snapshot(id),
-    task_id      TEXT NOT NULL REFERENCES task(id),
-    worktree_id  TEXT NOT NULL REFERENCES worktree(id),
-    project_id   TEXT NOT NULL REFERENCES project(id),
-    source_file  TEXT NOT NULL,
-    title        TEXT NOT NULL,
-    phase        TEXT,
-    status       TEXT NOT NULL,
-    confidence   REAL NOT NULL DEFAULT 1.0,
-    source_line  INTEGER NOT NULL DEFAULT 0,
-    recorded_at  TEXT NOT NULL
+    id               TEXT PRIMARY KEY,
+    snapshot_id      TEXT NOT NULL REFERENCES snapshot(id),
+    task_id          TEXT NOT NULL REFERENCES task(id),
+    worktree_id      TEXT NOT NULL REFERENCES worktree(id),
+    project_id       TEXT NOT NULL REFERENCES project(id),
+    source_file      TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    phase            TEXT,
+    status           TEXT NOT NULL,
+    confidence       REAL NOT NULL DEFAULT 1.0,
+    source_line      INTEGER NOT NULL DEFAULT 0,
+    -- Lineage snapshot: captured so the time machine can replay not just the
+    -- title/status but the inferred ancestry at that point. See dev brief.
+    aliases_json     TEXT NOT NULL DEFAULT '[]',
+    renamed_from     TEXT,
+    split_from_json  TEXT NOT NULL DEFAULT '[]',
+    merged_from_json TEXT NOT NULL DEFAULT '[]',
+    supersedes       TEXT,
+    recorded_at      TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_revision_snapshot ON task_revision(snapshot_id);
