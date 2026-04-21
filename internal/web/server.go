@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -384,6 +386,13 @@ var kindsNeedingRelated = map[string]bool{
 }
 
 func (s *Server) handleOverride(w http.ResponseWriter, r *http.Request) {
+	// CSRF mitigation: the board is meant to run on localhost. Any POST that
+	// didn't originate from the same host is almost certainly a cross-site
+	// forgery attempt — reject without touching state.
+	if !sameOriginPOST(r) {
+		http.Error(w, "bad origin", http.StatusForbidden)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -404,32 +413,126 @@ func (s *Server) handleOverride(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "related_task_id required for kind "+kind, http.StatusBadRequest)
 		return
 	}
-	if _, err := s.store.TaskByID(r.Context(), taskID); err != nil {
+
+	ctx := r.Context()
+	// Existence checks *outside* the tx so we can return crisp 404/400s.
+	if _, err := s.store.TaskByID(ctx, taskID); err != nil {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
 	if relatedID != "" {
-		if _, err := s.store.TaskByID(r.Context(), relatedID); err != nil {
+		if _, err := s.store.TaskByID(ctx, relatedID); err != nil {
 			http.Error(w, "related task not found: "+relatedID, http.StatusBadRequest)
 			return
 		}
 	}
-	u, err := ulid.New(ulid.Timestamp(time.Now()), ulid.DefaultEntropy())
+
+	now := time.Now().UTC()
+	overrideID, err := ulid.New(ulid.Timestamp(now), ulid.DefaultEntropy())
 	if err != nil {
 		s.internalError(w, fmt.Errorf("ulid: %w", err))
 		return
 	}
-	o := store.Override{
-		ID: u.String(), TaskID: taskID, Kind: kind, Note: note,
+	eventID, err := ulid.New(ulid.Timestamp(now), ulid.DefaultEntropy())
+	if err != nil {
+		s.internalError(w, fmt.Errorf("ulid: %w", err))
+		return
 	}
-	if relatedID != "" {
-		o.Data = map[string]any{"related_task_id": relatedID}
-	}
-	if err := s.store.InsertOverride(r.Context(), o); err != nil {
-		s.internalError(w, err)
+
+	// Wrap the override insert + task-state mutation in a single transaction.
+	// The override table by itself was merely audit — inert unless we also
+	// apply the effect to the task, which is what the user actually sees.
+	txErr := s.store.WithTx(ctx, func(tx *store.Store) error {
+		t, err := tx.TaskByID(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("task: %w", err)
+		}
+		o := store.Override{
+			ID: overrideID.String(), TaskID: taskID, Kind: kind, Note: note, CreatedAt: now,
+		}
+		if relatedID != "" {
+			o.Data = map[string]any{"related_task_id": relatedID}
+		}
+		if err := tx.InsertOverride(ctx, o); err != nil {
+			return fmt.Errorf("insert override: %w", err)
+		}
+
+		// Apply the kind's effect on task state.
+		switch kind {
+		case "mark_dropped":
+			t.Status = "dropped"
+		case "mark_same":
+			// This task is the duplicate; related is canonical.
+			t.Status = "dropped"
+			t.Supersedes = relatedID
+		case "mark_split_from":
+			t.SplitFrom = appendUniqueStr(t.SplitFrom, relatedID)
+			// User-asserted lineage is high confidence.
+			if t.Confidence < 1.0 {
+				t.Confidence = 1.0
+			}
+		case "mark_merged_from":
+			t.MergedFrom = appendUniqueStr(t.MergedFrom, relatedID)
+			if t.Confidence < 1.0 {
+				t.Confidence = 1.0
+			}
+		}
+		t.LastSeenAt = now
+		if err := tx.UpsertTask(ctx, *t); err != nil {
+			return fmt.Errorf("upsert task: %w", err)
+		}
+
+		return tx.InsertEvent(ctx, store.Event{
+			ID: eventID.String(), Timestamp: now, Type: "task_override",
+			TaskID: taskID, WorktreeID: t.WorktreeID,
+			Data: map[string]any{"kind": kind, "related_task_id": relatedID, "note": note},
+		})
+	})
+	if txErr != nil {
+		s.internalError(w, txErr)
 		return
 	}
 	http.Redirect(w, r, "/task/"+taskID, http.StatusSeeOther)
+}
+
+// sameOriginPOST returns true when the request's Origin or Referer header
+// points to the same host the request was served from. Falls back to allowing
+// the request only if both headers are absent *and* it's from a loopback
+// address — which a CSRF-attack browser won't be.
+func sameOriginPOST(r *http.Request) bool {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return u.Host == r.Host
+	}
+	if ref := r.Header.Get("Referer"); ref != "" {
+		u, err := url.Parse(ref)
+		if err != nil {
+			return false
+		}
+		return u.Host == r.Host
+	}
+	// No origin info at all — accept only for loopback clients (curl, tests).
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func appendUniqueStr(xs []string, s string) []string {
+	if s == "" {
+		return xs
+	}
+	for _, x := range xs {
+		if x == s {
+			return xs
+		}
+	}
+	return append(xs, s)
 }
 
 // ---- helpers ----

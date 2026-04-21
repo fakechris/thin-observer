@@ -147,7 +147,11 @@ func (in *Ingester) applyInTx(
 			old.MissingInRev = 0
 			old.CurrentTitle = newItems[d.NewIndex].Task.Title
 			old.Phase = newItems[d.NewIndex].Phase
-			old.Status = newItems[d.NewIndex].Task.Status
+			// "dropped" is a terminal observer-side decision (usually from a
+			// manual override). Never let a later markdown rev un-drop it.
+			if old.Status != "dropped" {
+				old.Status = newItems[d.NewIndex].Task.Status
+			}
 			old.SourceLine = newItems[d.NewIndex].Task.Line
 			old.LastSeenAt = now
 			old.LastSnapshotID = snapID
@@ -179,7 +183,9 @@ func (in *Ingester) applyInTx(
 				old.CurrentTitle = newTitle
 			}
 			old.Phase = newItems[d.NewIndex].Phase
-			old.Status = newItems[d.NewIndex].Task.Status
+			if old.Status != "dropped" {
+				old.Status = newItems[d.NewIndex].Task.Status
+			}
 			old.SourceLine = newItems[d.NewIndex].Task.Line
 			old.LastSeenAt = now
 			old.LastSnapshotID = snapID
@@ -259,7 +265,19 @@ func (in *Ingester) applyInTx(
 				}
 				childIDs = append(childIDs, child.ID)
 			}
-			parent.Status = "dropped" // umbrella: we mark superseded via supersedes=nil but status=dropped
+			// A completed parent stays done: if the agent closed the umbrella
+			// and then logged follow-ups as separate items, the umbrella's work
+			// actually finished. Only pending/in_progress parents become dropped.
+			if parent.Status != "done" {
+				parent.Status = "dropped"
+			}
+			// Point the parent at one of its children for symmetry with merge
+			// (where each parent.Supersedes = child.ID). Split is 1→N so we
+			// pick the first child as the canonical successor — SplitFrom on
+			// each child carries the full relationship.
+			if len(childIDs) > 0 {
+				parent.Supersedes = childIDs[0]
+			}
 			parent.LastSeenAt = now
 			parent.MissingInRev = 0
 			if err := tx.UpsertTask(ctx, *parent); err != nil {
@@ -300,7 +318,11 @@ func (in *Ingester) applyInTx(
 			for _, oid := range d.OldIDs {
 				if p := findByID(existing, oid); p != nil {
 					seenOld[p.ID] = true
-					p.Status = "dropped"
+					// Preserve "done" — a completed parent that got merged into
+					// a follow-up still had its own work finished.
+					if p.Status != "done" {
+						p.Status = "dropped"
+					}
 					p.Supersedes = child.ID
 					p.LastSeenAt = now
 					p.MissingInRev = 0

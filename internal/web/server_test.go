@@ -88,6 +88,7 @@ func TestTaskPageAndOverride(t *testing.T) {
 	form.Set("note", "we will not do this one")
 	r2 := httptest.NewRequest("POST", "/override/"+taskID, strings.NewReader(form.Encode()))
 	r2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r2.Header.Set("Origin", "http://"+r2.Host)
 	rec2 := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec2, r2)
 	if rec2.Code != http.StatusSeeOther {
@@ -96,6 +97,70 @@ func TestTaskPageAndOverride(t *testing.T) {
 	overs, _ := s.OverridesForTask(context.Background(), taskID)
 	if len(overs) != 1 || overs[0].Kind != "mark_dropped" {
 		t.Fatalf("expected 1 override kind=mark_dropped, got %+v", overs)
+	}
+	// mark_dropped must actually flip the task's status, not just log.
+	t2, err := s.TaskByID(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("reload task: %v", err)
+	}
+	if t2.Status != "dropped" {
+		t.Errorf("task status=%q want dropped — override did not apply", t2.Status)
+	}
+}
+
+func TestOverrideRejectsCrossOrigin(t *testing.T) {
+	srv, s, w := testServer(t)
+	tasks, _ := s.TasksByWorktree(context.Background(), w.ID)
+	if len(tasks) == 0 {
+		t.Fatal("expected seeded tasks")
+	}
+	taskID := tasks[0].ID
+	form := url.Values{}
+	form.Set("kind", "mark_dropped")
+	r := httptest.NewRequest("POST", "/override/"+taskID, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "http://attacker.example")
+	r.RemoteAddr = "203.0.113.9:1234" // non-loopback
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin override status=%d want 403", rec.Code)
+	}
+	overs, _ := s.OverridesForTask(context.Background(), taskID)
+	if len(overs) != 0 {
+		t.Errorf("cross-origin POST still wrote %d overrides", len(overs))
+	}
+}
+
+func TestOverrideMarkSameSetsSupersedes(t *testing.T) {
+	srv, s, w := testServer(t)
+	ctx := context.Background()
+	tasks, _ := s.TasksByWorktree(ctx, w.ID)
+	if len(tasks) < 2 {
+		t.Fatal("need at least two tasks")
+	}
+	dupID, canonID := tasks[0].ID, tasks[1].ID
+
+	form := url.Values{}
+	form.Set("kind", "mark_same")
+	form.Set("related_task_id", canonID)
+	r := httptest.NewRequest("POST", "/override/"+dupID, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "http://"+r.Host)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("override status=%d want 303", rec.Code)
+	}
+	got, err := s.TaskByID(ctx, dupID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Supersedes != canonID {
+		t.Errorf("supersedes=%q want %q", got.Supersedes, canonID)
+	}
+	if got.Status != "dropped" {
+		t.Errorf("status=%q want dropped", got.Status)
 	}
 }
 

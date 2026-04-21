@@ -29,14 +29,26 @@ type Watcher struct {
 	logger   *slog.Logger
 	fs       *fsnotify.Watcher
 	Events   chan ChangeEvent
-	debounce map[string]time.Time
+	debounce map[string]*debounceEntry
 	mu       sync.Mutex
+	// period is the "quiet window": flush a file when no activity seen for
+	// period milliseconds. Streaming agents write continuously though, so we
+	// also cap total delay at maxDelay regardless of activity.
 	period   time.Duration
+	maxDelay time.Duration
 	// worktrees tracks what we're watching; key is worktreePath, value is dirs added
 	worktrees map[string]map[string]struct{}
 	// wg tracks the Run goroutine so Close can wait for it to exit before
 	// closing Events, preventing send-on-closed-channel panics.
 	wg sync.WaitGroup
+}
+
+// debounceEntry records the first and last activity time for one file.
+// `first` bounds total delay (streaming writers); `last` drives the quiet
+// window (batch writers).
+type debounceEntry struct {
+	first time.Time
+	last  time.Time
 }
 
 func New(logger *slog.Logger) (*Watcher, error) {
@@ -48,8 +60,9 @@ func New(logger *slog.Logger) (*Watcher, error) {
 		logger:    logger,
 		fs:        fs,
 		Events:    make(chan ChangeEvent, 256),
-		debounce:  map[string]time.Time{},
+		debounce:  map[string]*debounceEntry{},
 		period:    500 * time.Millisecond,
+		maxDelay:  5 * time.Second,
 		worktrees: map[string]map[string]struct{}{},
 	}, nil
 }
@@ -64,14 +77,18 @@ func (w *Watcher) Start(ctx context.Context) {
 	}()
 }
 
-// Close shuts down the watcher. It closes the underlying fsnotify watcher
-// (which makes Run exit on the next loop iteration), waits for any Run
-// goroutine started via Start() to finish, then closes Events. Safe to call
-// when Run was never started — wg.Wait returns immediately.
+// Close shuts down the watcher. It closes the underlying fsnotify watcher —
+// which makes Run exit on the next loop iteration — then waits for any Run
+// goroutine started via Start() to finish.
+//
+// Note: we deliberately do NOT close w.Events here. Closing a send channel
+// from anywhere other than the sender risks send-on-closed panics if a
+// concurrent flush is still in-flight. Receivers should select on
+// ctx.Done() (or another external signal) to know when to stop reading.
+// Once Run has returned, no further values will be sent on Events.
 func (w *Watcher) Close() error {
 	err := w.fs.Close()
 	w.wg.Wait()
-	close(w.Events)
 	return err
 }
 
@@ -128,8 +145,14 @@ func (w *Watcher) Run(ctx context.Context) {
 					continue
 				}
 			}
+			now := time.Now()
 			w.mu.Lock()
-			w.debounce[ev.Name] = time.Now()
+			e, ok := w.debounce[ev.Name]
+			if !ok {
+				e = &debounceEntry{first: now}
+				w.debounce[ev.Name] = e
+			}
+			e.last = now
 			w.mu.Unlock()
 		case err, ok := <-w.fs.Errors:
 			if !ok {
@@ -145,8 +168,14 @@ func (w *Watcher) Run(ctx context.Context) {
 func (w *Watcher) flush(now time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for name, ts := range w.debounce {
-		if now.Sub(ts) < w.period {
+	for name, e := range w.debounce {
+		// Emit when either (a) the file has been quiet for at least one
+		// period, or (b) activity has been ongoing for maxDelay — whichever
+		// fires first. (b) is the escape hatch for streaming writers that
+		// would otherwise starve the quiet window forever.
+		quiet := now.Sub(e.last) >= w.period
+		tooOld := w.maxDelay > 0 && now.Sub(e.first) >= w.maxDelay
+		if !quiet && !tooOld {
 			continue
 		}
 		wt := w.worktreeFor(name)
