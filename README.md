@@ -53,7 +53,7 @@ thin-observer recap my-app
 | | |
 |---|---|
 | `thin-observer add [path]` | register a project (default: cwd) |
-| `thin-observer remove <name>` | unregister a project |
+| `thin-observer remove <name-or-path>` | unregister a project |
 | `thin-observer watch` | daemon: fsnotify plan files, ingest on change |
 | `thin-observer watch --once` | one-shot discovery + ingest, then exit |
 | `thin-observer status` | one-screen overview table of all worktrees |

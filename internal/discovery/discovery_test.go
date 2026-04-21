@@ -88,11 +88,11 @@ func TestRemoveProject(t *testing.T) {
 func TestRemoveProjectByBasename(t *testing.T) {
 	cfg := &Config{
 		Projects: []ProjectConfig{
-			{Name: "my-app", Path: "/home/user/workspace/my-app"},
+			{Name: "custom-name", Path: "/home/user/workspace/my-app"},
 		},
 	}
 	if !RemoveProject(cfg, "my-app") {
-		t.Fatal("remove by name should work")
+		t.Fatal("remove by basename should work")
 	}
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("expected 0 projects, got %d", len(cfg.Projects))
