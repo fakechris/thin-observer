@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,11 +57,24 @@ func TestSaveLoadConfigRoundTrip(t *testing.T) {
 
 func TestAddProjectDedup(t *testing.T) {
 	cfg := &Config{}
-	if !AddProject(cfg, "foo", "/tmp/foo") {
-		t.Fatal("first add should return true")
+	if err := AddProject(cfg, "foo", "/tmp/foo"); err != nil {
+		t.Fatalf("first add: %v", err)
 	}
-	if AddProject(cfg, "foo2", "/tmp/foo") {
-		t.Fatal("duplicate path should return false")
+	if err := AddProject(cfg, "foo2", "/tmp/foo"); !errors.Is(err, ErrProjectAlreadyRegistered) {
+		t.Fatalf("duplicate path err = %v, want %v", err, ErrProjectAlreadyRegistered)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
+	}
+}
+
+func TestAddProjectRejectsDuplicateName(t *testing.T) {
+	cfg := &Config{}
+	if err := AddProject(cfg, "foo", "/tmp/foo"); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := AddProject(cfg, "foo", "/tmp/bar"); !errors.Is(err, ErrProjectAlreadyRegistered) {
+		t.Fatalf("duplicate name err = %v, want %v", err, ErrProjectAlreadyRegistered)
 	}
 	if len(cfg.Projects) != 1 {
 		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
@@ -74,14 +88,14 @@ func TestRemoveProject(t *testing.T) {
 			{Name: "beta", Path: "/tmp/beta"},
 		},
 	}
-	if !RemoveProject(cfg, "alpha") {
-		t.Fatal("remove by name should return true")
+	if err := RemoveProject(cfg, "alpha"); err != nil {
+		t.Fatalf("remove by name: %v", err)
 	}
 	if len(cfg.Projects) != 1 || cfg.Projects[0].Name != "beta" {
 		t.Fatalf("after remove: %+v", cfg.Projects)
 	}
-	if RemoveProject(cfg, "nonexistent") {
-		t.Fatal("removing nonexistent should return false")
+	if err := RemoveProject(cfg, "nonexistent"); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("remove nonexistent err = %v, want %v", err, ErrProjectNotFound)
 	}
 }
 
@@ -91,11 +105,26 @@ func TestRemoveProjectByBasename(t *testing.T) {
 			{Name: "custom-name", Path: "/home/user/workspace/my-app"},
 		},
 	}
-	if !RemoveProject(cfg, "my-app") {
-		t.Fatal("remove by basename should work")
+	if err := RemoveProject(cfg, "my-app"); err != nil {
+		t.Fatalf("remove by basename: %v", err)
 	}
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("expected 0 projects, got %d", len(cfg.Projects))
+	}
+}
+
+func TestRemoveProjectByBasenameRequiresUniqueMatch(t *testing.T) {
+	cfg := &Config{
+		Projects: []ProjectConfig{
+			{Name: "alpha", Path: "/home/user/a/my-app"},
+			{Name: "beta", Path: "/home/user/b/my-app"},
+		},
+	}
+	if err := RemoveProject(cfg, "my-app"); !errors.Is(err, ErrProjectAmbiguous) {
+		t.Fatalf("remove ambiguous basename err = %v, want %v", err, ErrProjectAmbiguous)
+	}
+	if len(cfg.Projects) != 2 {
+		t.Fatalf("ambiguous remove should not mutate projects, got %+v", cfg.Projects)
 	}
 }
 

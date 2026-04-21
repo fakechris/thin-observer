@@ -1,13 +1,15 @@
 // Package discovery finds worktrees to observe.
 //
 // Two modes:
-//   1. Config-file registration: user explicitly lists repos to watch.
-//   2. Auto-scan: walk a root directory (default: ~/workspace) looking for
-//      git repos. Git worktrees (listed via `git worktree list`) are included.
+//  1. Config-file registration: user explicitly lists repos to watch.
+//  2. Auto-scan: walk a root directory (default: ~/workspace) looking for
+//     git repos. Git worktrees (listed via `git worktree list`) are included.
 package discovery
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +35,12 @@ type ProjectConfig struct {
 	Path string `yaml:"path"`
 }
 
+var (
+	ErrProjectAlreadyRegistered = errors.New("project already registered")
+	ErrProjectNotFound          = errors.New("project not found")
+	ErrProjectAmbiguous         = errors.New("project match is ambiguous")
+)
+
 // SaveConfig writes the config to the given path, creating parent directories
 // as needed.
 func SaveConfig(path string, cfg *Config) error {
@@ -47,29 +55,56 @@ func SaveConfig(path string, cfg *Config) error {
 }
 
 // AddProject appends a project to the config if not already present.
-// It returns true if the project was added, false if it was already registered.
-func AddProject(cfg *Config, name, absPath string) bool {
+func AddProject(cfg *Config, name, absPath string) error {
 	for _, p := range cfg.Projects {
 		expanded, _ := expand(p.Path)
-		if expanded == absPath {
-			return false
+		if expanded == absPath || p.Path == absPath {
+			return fmt.Errorf("%w: path %s", ErrProjectAlreadyRegistered, absPath)
+		}
+		if p.Name == name {
+			return fmt.Errorf("%w: name %s", ErrProjectAlreadyRegistered, name)
 		}
 	}
 	cfg.Projects = append(cfg.Projects, ProjectConfig{Name: name, Path: absPath})
-	return true
+	return nil
 }
 
 // RemoveProject removes a project matching name or path from the config.
-// It returns true if a project was removed.
-func RemoveProject(cfg *Config, key string) bool {
+func RemoveProject(cfg *Config, key string) error {
+	var exact []int
 	for i, p := range cfg.Projects {
 		expanded, _ := expand(p.Path)
-		if p.Name == key || p.Path == key || expanded == key || filepath.Base(expanded) == key {
-			cfg.Projects = append(cfg.Projects[:i], cfg.Projects[i+1:]...)
-			return true
+		if p.Name == key || p.Path == key || expanded == key {
+			exact = append(exact, i)
 		}
 	}
-	return false
+	if len(exact) == 1 {
+		removeProjectAt(cfg, exact[0])
+		return nil
+	}
+	if len(exact) > 1 {
+		return fmt.Errorf("%w: %s", ErrProjectAmbiguous, key)
+	}
+
+	var basename []int
+	for i, p := range cfg.Projects {
+		expanded, _ := expand(p.Path)
+		if filepath.Base(expanded) == key {
+			basename = append(basename, i)
+		}
+	}
+	if len(basename) == 1 {
+		removeProjectAt(cfg, basename[0])
+		return nil
+	}
+	if len(basename) > 1 {
+		return fmt.Errorf("%w: %s", ErrProjectAmbiguous, key)
+	}
+	return fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+}
+
+func removeProjectAt(cfg *Config, i int) {
+	cfg.Projects = append(cfg.Projects[:i], cfg.Projects[i+1:]...)
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -92,8 +127,8 @@ func LoadConfig(path string) (*Config, error) {
 
 // Found describes a discovered worktree.
 type Found struct {
-	ProjectRoot string // git repo root (or main worktree root)
-	ProjectName string // base name of ProjectRoot
+	ProjectRoot  string // git repo root (or main worktree root)
+	ProjectName  string // base name of ProjectRoot
 	WorktreePath string
 	WorktreeName string // base name of WorktreePath; for the main worktree, equals project name
 }

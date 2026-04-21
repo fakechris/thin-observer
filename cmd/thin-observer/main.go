@@ -23,8 +23,8 @@ import (
 	"github.com/chris/thin-observer/internal/paths"
 	"github.com/chris/thin-observer/internal/recap"
 	"github.com/chris/thin-observer/internal/store"
-	"github.com/chris/thin-observer/internal/web"
 	"github.com/chris/thin-observer/internal/watcher"
+	"github.com/chris/thin-observer/internal/web"
 	"github.com/oklog/ulid/v2"
 	"github.com/spf13/cobra"
 )
@@ -433,9 +433,8 @@ func addCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-			if !discovery.AddProject(cfg, name, abs) {
-				fmt.Fprintf(os.Stderr, "already registered: %s\n", abs)
-				return nil
+			if err := discovery.AddProject(cfg, name, abs); err != nil {
+				return err
 			}
 			if err := discovery.SaveConfig(cfgPath, cfg); err != nil {
 				return fmt.Errorf("save config: %w", err)
@@ -467,8 +466,8 @@ func removeCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-			if !discovery.RemoveProject(cfg, key) {
-				return fmt.Errorf("project not found in config: %s", key)
+			if err := discovery.RemoveProject(cfg, key); err != nil {
+				return err
 			}
 			if err := discovery.SaveConfig(cfgPath, cfg); err != nil {
 				return fmt.Errorf("save config: %w", err)
