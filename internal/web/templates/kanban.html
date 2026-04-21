@@ -1,4 +1,29 @@
 {{define "body"}}
+<section class="board-header">
+  <div>
+    <p class="eyebrow">Project{{if .SelectedPlanName}} · Plan{{end}}</p>
+    <h1>
+      {{.SelectedProjectName}}{{if .SelectedPlanName}} <span class="plan-sep">›</span> {{.SelectedPlanName}}{{end}}
+    </h1>
+  </div>
+  <nav class="project-switcher" aria-label="Project switcher">
+    <a class="project-pill {{if not .SelectedProjectID}}selected{{end}}" href="/">All Projects</a>
+    {{range .Projects}}
+    <a class="project-pill {{if .Selected}}selected{{end}}" href="{{.HREF}}">{{.Name}}</a>
+    {{end}}
+  </nav>
+  {{if .Plans}}
+  <nav class="plan-switcher" aria-label="Plan switcher">
+    <a class="plan-pill {{if not .SelectedPlanID}}selected{{end}}" href="/{{if .SelectedProjectID}}?project={{.SelectedProjectID}}{{end}}">All Plans</a>
+    {{range .Plans}}
+    <a class="plan-pill {{if .Selected}}selected{{end}}" href="{{.HREF}}" title="{{.WorktreeName}} · {{.Basename}}">
+      <span class="plan-pill-wt">{{.WorktreeName}}</span>
+      <span class="plan-pill-base">{{.Basename}}</span>
+    </a>
+    {{end}}
+  </nav>
+  {{end}}
+</section>
 <section class="kanban">
   {{range .Columns}}
   <div class="column col-{{.Key}}">

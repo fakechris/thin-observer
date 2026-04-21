@@ -51,7 +51,46 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(context.Background(), db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{DB: db, Path: path, exec: db}, nil
+}
+
+// migrate applies schema changes CREATE TABLE IF NOT EXISTS cannot make to
+// existing tables (adding columns to already-created tables). Each step is
+// idempotent so Open() stays cheap on repeat startups.
+func migrate(ctx context.Context, db *sql.DB) error {
+	steps := []struct {
+		table  string
+		column string
+		ddl    string
+	}{
+		// event.snapshot_id added in the multi-plan view / time-machine PR to
+		// replace the fragile (worktree_id, timestamp) event-to-snapshot match.
+		{"event", "snapshot_id", `ALTER TABLE event ADD COLUMN snapshot_id TEXT REFERENCES snapshot(id)`},
+	}
+	for _, s := range steps {
+		has, err := columnExists(ctx, db, s.table, s.column)
+		if err != nil {
+			return fmt.Errorf("check %s.%s: %w", s.table, s.column, err)
+		}
+		if has {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, s.ddl); err != nil {
+			return fmt.Errorf("add %s.%s: %w", s.table, s.column, err)
+		}
+	}
+	return nil
+}
+
+func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	var count int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count)
+	return count > 0, err
 }
 
 // WithTx runs fn inside a SQL transaction. The *Store passed to fn shares the
@@ -253,6 +292,72 @@ func (s *Store) SnapshotsBefore(ctx context.Context, worktreeID, sourceFile stri
 	return scanSnapshot(row)
 }
 
+// SnapshotByID returns one snapshot by its ULID.
+func (s *Store) SnapshotByID(ctx context.Context, id string) (*Snapshot, error) {
+	row := s.exec.QueryRowContext(ctx, `
+		SELECT id, worktree_id, source_file, timestamp, raw_hash, phases_json, COALESCE(commit_sha, '')
+		FROM snapshot WHERE id = ?`, id)
+	return scanSnapshot(row)
+}
+
+// ListSnapshots returns snapshots in descending time order. When worktreeID
+// is empty, spans all worktrees. A non-positive limit returns all rows.
+func (s *Store) ListSnapshots(ctx context.Context, worktreeID string, limit int) ([]Snapshot, error) {
+	q := `SELECT id, worktree_id, source_file, timestamp, raw_hash, phases_json, COALESCE(commit_sha, '')
+		FROM snapshot`
+	var args []any
+	if worktreeID != "" {
+		q += ` WHERE worktree_id = ?`
+		args = append(args, worktreeID)
+	}
+	q += ` ORDER BY timestamp DESC`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.exec.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Snapshot
+	for rows.Next() {
+		snap, err := scanSnapshot(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *snap)
+	}
+	return out, rows.Err()
+}
+
+// EventsBySnapshot returns events produced during the ingest that created the
+// given snapshot. Events carry snapshot_id directly (set by the ingester), so
+// this is a straightforward FK lookup — no timestamp-collision risk.
+func (s *Store) EventsBySnapshot(ctx context.Context, snapshotID string) ([]Event, error) {
+	rows, err := s.exec.QueryContext(ctx, `
+		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), COALESCE(snapshot_id, ''), data_json
+		FROM event
+		WHERE snapshot_id = ?
+		ORDER BY id`, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		var ts, data string
+		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &e.SnapshotID, &data); err != nil {
+			return nil, err
+		}
+		e.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
+		_ = json.Unmarshal([]byte(data), &e.Data)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 func scanSnapshot(r scanner) (*Snapshot, error) {
 	var snap Snapshot
 	var ts string
@@ -416,16 +521,16 @@ func (s *Store) InsertEvent(ctx context.Context, e Event) error {
 		return fmt.Errorf("marshal event data: %w", err)
 	}
 	_, err = s.exec.ExecContext(ctx, `
-		INSERT INTO event (id, timestamp, type, task_id, worktree_id, data_json)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO event (id, timestamp, type, task_id, worktree_id, snapshot_id, data_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, e.ID, e.Timestamp.Format(time.RFC3339Nano), e.Type,
-		nilIfEmpty(e.TaskID), nilIfEmpty(e.WorktreeID), string(data))
+		nilIfEmpty(e.TaskID), nilIfEmpty(e.WorktreeID), nilIfEmpty(e.SnapshotID), string(data))
 	return err
 }
 
 func (s *Store) EventsForTask(ctx context.Context, taskID string) ([]Event, error) {
 	rows, err := s.exec.QueryContext(ctx, `
-		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), data_json
+		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), COALESCE(snapshot_id, ''), data_json
 		FROM event WHERE task_id = ? ORDER BY timestamp`, taskID)
 	if err != nil {
 		return nil, err
@@ -435,7 +540,7 @@ func (s *Store) EventsForTask(ctx context.Context, taskID string) ([]Event, erro
 	for rows.Next() {
 		var e Event
 		var ts, data string
-		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &data); err != nil {
+		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &e.SnapshotID, &data); err != nil {
 			return nil, err
 		}
 		e.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
@@ -447,7 +552,7 @@ func (s *Store) EventsForTask(ctx context.Context, taskID string) ([]Event, erro
 
 func (s *Store) RecentEvents(ctx context.Context, limit int) ([]Event, error) {
 	rows, err := s.exec.QueryContext(ctx, `
-		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), data_json
+		SELECT id, timestamp, type, COALESCE(task_id, ''), COALESCE(worktree_id, ''), COALESCE(snapshot_id, ''), data_json
 		FROM event ORDER BY timestamp DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -457,7 +562,7 @@ func (s *Store) RecentEvents(ctx context.Context, limit int) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var ts, data string
-		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &data); err != nil {
+		if err := rows.Scan(&e.ID, &ts, &e.Type, &e.TaskID, &e.WorktreeID, &e.SnapshotID, &data); err != nil {
 			return nil, err
 		}
 		e.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
@@ -502,6 +607,253 @@ func (s *Store) OverridesForTask(ctx context.Context, taskID string) ([]Override
 		o.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 		_ = json.Unmarshal([]byte(data), &o.Data)
 		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// ---- PlanDoc ----
+
+// UpsertPlanDoc inserts a plan_doc row or updates the existing row for the
+// same (worktree_id, source_file). The caller supplies the ID for the insert
+// case; on update the existing ID is preserved. Use PlanDocByWorktreeAndFile
+// first if you need to know the stable ID.
+func (s *Store) UpsertPlanDoc(ctx context.Context, p PlanDoc) error {
+	if p.LastSeenAt.IsZero() {
+		p.LastSeenAt = time.Now().UTC()
+	}
+	_, err := s.exec.ExecContext(ctx, `
+		INSERT INTO plan_doc (id, worktree_id, source_file, title, kind, last_snapshot_id, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(worktree_id, source_file) DO UPDATE SET
+			title            = excluded.title,
+			kind             = excluded.kind,
+			last_snapshot_id = excluded.last_snapshot_id,
+			last_seen_at     = excluded.last_seen_at
+	`, p.ID, p.WorktreeID, p.SourceFile, p.Title, p.Kind,
+		nilIfEmpty(p.LastSnapshotID), p.LastSeenAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) PlanDocByWorktreeAndFile(ctx context.Context, worktreeID, sourceFile string) (*PlanDoc, error) {
+	row := s.exec.QueryRowContext(ctx, `
+		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at
+		FROM plan_doc WHERE worktree_id = ? AND source_file = ?`, worktreeID, sourceFile)
+	return scanPlanDoc(row)
+}
+
+func (s *Store) PlanDocByID(ctx context.Context, id string) (*PlanDoc, error) {
+	row := s.exec.QueryRowContext(ctx, `
+		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at
+		FROM plan_doc WHERE id = ?`, id)
+	return scanPlanDoc(row)
+}
+
+func (s *Store) PlanDocsByWorktree(ctx context.Context, worktreeID string) ([]PlanDoc, error) {
+	rows, err := s.exec.QueryContext(ctx, `
+		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at
+		FROM plan_doc WHERE worktree_id = ? ORDER BY source_file`, worktreeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PlanDoc
+	for rows.Next() {
+		p, err := scanPlanDoc(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+func scanPlanDoc(r scanner) (*PlanDoc, error) {
+	var p PlanDoc
+	var seen string
+	if err := r.Scan(&p.ID, &p.WorktreeID, &p.SourceFile, &p.Title, &p.Kind, &p.LastSnapshotID, &seen); err != nil {
+		return nil, err
+	}
+	p.LastSeenAt, _ = time.Parse(time.RFC3339Nano, seen)
+	return &p, nil
+}
+
+// TaskCountByPlanDoc returns the current task count for a plan_doc, derived
+// from task.source_file. There is no stored count column.
+func (s *Store) TaskCountByPlanDoc(ctx context.Context, planDocID string) (int, error) {
+	var n int
+	err := s.exec.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM task
+		JOIN plan_doc ON plan_doc.worktree_id = task.worktree_id AND plan_doc.source_file = task.source_file
+		WHERE plan_doc.id = ?`, planDocID).Scan(&n)
+	return n, err
+}
+
+// ---- PlanLink ----
+
+// ReplacePlanLinks deletes all existing links rooted at fromPlanID and
+// inserts the provided set. Callers pass the already-resolved absolute
+// to_source_file path so the resolver can match directly.
+func (s *Store) ReplacePlanLinks(ctx context.Context, fromPlanID string, links []PlanLink) error {
+	if _, err := s.exec.ExecContext(ctx, `DELETE FROM plan_link WHERE from_plan_id = ?`, fromPlanID); err != nil {
+		return fmt.Errorf("delete plan_link: %w", err)
+	}
+	for _, l := range links {
+		if _, err := s.exec.ExecContext(ctx, `
+			INSERT INTO plan_link (id, from_plan_id, to_source_file, to_plan_id, source_line, label)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, l.ID, fromPlanID, l.ToSourceFile, nilIfEmpty(l.ToPlanID), l.SourceLine, l.Label); err != nil {
+			return fmt.Errorf("insert plan_link: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) LinksFrom(ctx context.Context, fromPlanID string) ([]PlanLink, error) {
+	rows, err := s.exec.QueryContext(ctx, `
+		SELECT id, from_plan_id, to_source_file, COALESCE(to_plan_id, ''), source_line, label
+		FROM plan_link WHERE from_plan_id = ? ORDER BY source_line`, fromPlanID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PlanLink
+	for rows.Next() {
+		var l PlanLink
+		if err := rows.Scan(&l.ID, &l.FromPlanID, &l.ToSourceFile, &l.ToPlanID, &l.SourceLine, &l.Label); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// ResolvePlanLinkTargets sets plan_link.to_plan_id for any links whose
+// to_source_file matches a plan_doc.source_file within the same worktree.
+// Links with no matching plan_doc remain unresolved (to_plan_id NULL).
+func (s *Store) ResolvePlanLinkTargets(ctx context.Context, worktreeID string) error {
+	_, err := s.exec.ExecContext(ctx, `
+		UPDATE plan_link
+		SET to_plan_id = (
+			SELECT pd.id FROM plan_doc pd
+			WHERE pd.worktree_id = ? AND pd.source_file = plan_link.to_source_file
+			LIMIT 1
+		)
+		WHERE from_plan_id IN (SELECT id FROM plan_doc WHERE worktree_id = ?)
+	`, worktreeID, worktreeID)
+	return err
+}
+
+// ---- TaskRevision ----
+
+// InsertTaskRevision appends one task_revision row. Never updates — callers
+// that want a new state for the same task write another row with a new
+// snapshot_id. Defaults RecordedAt to now if zero.
+func (s *Store) InsertTaskRevision(ctx context.Context, r TaskRevision) error {
+	if r.RecordedAt.IsZero() {
+		r.RecordedAt = time.Now().UTC()
+	}
+	if r.Confidence == 0 {
+		r.Confidence = 1.0
+	}
+	// Normalize nil slices to [] so schema defaults and JSON round-trip are
+	// stable — a nil slice marshals to "null" which breaks unmarshal into []string.
+	if r.Aliases == nil {
+		r.Aliases = []string{}
+	}
+	if r.SplitFrom == nil {
+		r.SplitFrom = []string{}
+	}
+	if r.MergedFrom == nil {
+		r.MergedFrom = []string{}
+	}
+	aliases, err := json.Marshal(r.Aliases)
+	if err != nil {
+		return fmt.Errorf("marshal aliases: %w", err)
+	}
+	splitFrom, err := json.Marshal(r.SplitFrom)
+	if err != nil {
+		return fmt.Errorf("marshal split_from: %w", err)
+	}
+	mergedFrom, err := json.Marshal(r.MergedFrom)
+	if err != nil {
+		return fmt.Errorf("marshal merged_from: %w", err)
+	}
+	_, err = s.exec.ExecContext(ctx, `
+		INSERT INTO task_revision (
+			id, snapshot_id, task_id, worktree_id, project_id,
+			source_file, title, phase, status, confidence, source_line,
+			aliases_json, renamed_from, split_from_json, merged_from_json, supersedes,
+			recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, r.ID, r.SnapshotID, r.TaskID, r.WorktreeID, r.ProjectID,
+		r.SourceFile, r.Title, nilIfEmpty(r.Phase), r.Status, r.Confidence, r.SourceLine,
+		string(aliases), nilIfEmpty(r.RenamedFrom), string(splitFrom), string(mergedFrom), nilIfEmpty(r.Supersedes),
+		r.RecordedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+const taskRevisionSelectSQL = `SELECT
+	id, snapshot_id, task_id, worktree_id, project_id,
+	source_file, title, COALESCE(phase, ''), status, confidence, source_line,
+	aliases_json, COALESCE(renamed_from, ''), split_from_json, merged_from_json, COALESCE(supersedes, ''),
+	recorded_at
+FROM task_revision`
+
+func scanTaskRevision(r scanner) (*TaskRevision, error) {
+	var tr TaskRevision
+	var aliases, splitFrom, mergedFrom, recorded string
+	if err := r.Scan(
+		&tr.ID, &tr.SnapshotID, &tr.TaskID, &tr.WorktreeID, &tr.ProjectID,
+		&tr.SourceFile, &tr.Title, &tr.Phase, &tr.Status, &tr.Confidence, &tr.SourceLine,
+		&aliases, &tr.RenamedFrom, &splitFrom, &mergedFrom, &tr.Supersedes,
+		&recorded); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(aliases), &tr.Aliases); err != nil {
+		return nil, fmt.Errorf("unmarshal aliases: %w", err)
+	}
+	if err := json.Unmarshal([]byte(splitFrom), &tr.SplitFrom); err != nil {
+		return nil, fmt.Errorf("unmarshal split_from: %w", err)
+	}
+	if err := json.Unmarshal([]byte(mergedFrom), &tr.MergedFrom); err != nil {
+		return nil, fmt.Errorf("unmarshal merged_from: %w", err)
+	}
+	tr.RecordedAt, _ = time.Parse(time.RFC3339Nano, recorded)
+	return &tr, nil
+}
+
+func (s *Store) TaskRevisionsBySnapshot(ctx context.Context, snapshotID string) ([]TaskRevision, error) {
+	rows, err := s.exec.QueryContext(ctx, taskRevisionSelectSQL+` WHERE snapshot_id = ? ORDER BY source_line, title`, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TaskRevision
+	for rows.Next() {
+		tr, err := scanTaskRevision(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *tr)
+	}
+	return out, rows.Err()
+}
+
+// TaskHistoryByTask returns all revisions of one task in recorded order, oldest
+// first. Used by the time-machine UI and by future task-detail pages.
+func (s *Store) TaskHistoryByTask(ctx context.Context, taskID string) ([]TaskRevision, error) {
+	rows, err := s.exec.QueryContext(ctx, taskRevisionSelectSQL+` WHERE task_id = ? ORDER BY recorded_at`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TaskRevision
+	for rows.Next() {
+		tr, err := scanTaskRevision(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *tr)
 	}
 	return out, rows.Err()
 }

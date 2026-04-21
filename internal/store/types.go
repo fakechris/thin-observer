@@ -57,7 +57,57 @@ type Event struct {
 	Type       string
 	TaskID     string
 	WorktreeID string
+	SnapshotID string
 	Data       map[string]any
+}
+
+// PlanDoc is one row per watched markdown file. "Kind" is an observer-side
+// classification (task_plan / progress / findings / detailed_plan / unknown).
+type PlanDoc struct {
+	ID             string
+	WorktreeID     string
+	SourceFile     string
+	Title          string
+	Kind           string
+	LastSnapshotID string
+	LastSeenAt     time.Time
+}
+
+// PlanLink is a cross-plan reference extracted from markdown. ToSourceFile is
+// resolved to an absolute path at ingest time. ToPlanID is set by the resolver
+// when a matching plan_doc exists in the same worktree.
+type PlanLink struct {
+	ID           string
+	FromPlanID   string
+	ToSourceFile string
+	ToPlanID     string
+	SourceLine   int
+	Label        string
+}
+
+// TaskRevision is an append-only record of a task's observed state at a
+// given snapshot. Unlike Task, TaskRevision rows are never mutated — the
+// time-machine UI reads them to reconstruct a prior board. project_id is
+// denormalized (matches the worktree's project at record time) so a
+// project-scoped timeline can be served without a join.
+type TaskRevision struct {
+	ID          string
+	SnapshotID  string
+	TaskID      string
+	WorktreeID  string
+	ProjectID   string
+	SourceFile  string
+	Title       string
+	Phase       string
+	Status      string
+	Confidence  float64
+	SourceLine  int
+	Aliases     []string
+	RenamedFrom string
+	SplitFrom   []string
+	MergedFrom  []string
+	Supersedes  string
+	RecordedAt  time.Time
 }
 
 type Override struct {

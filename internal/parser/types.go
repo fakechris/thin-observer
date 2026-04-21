@@ -3,11 +3,21 @@ package parser
 import "time"
 
 type PlanDoc struct {
-	SourceFile  string    `json:"source_file"`
-	ParsedAt    time.Time `json:"parsed_at"`
+	SourceFile  string      `json:"source_file"`
+	ParsedAt    time.Time   `json:"parsed_at"`
 	Frontmatter Frontmatter `json:"frontmatter"`
-	Phases      []Phase   `json:"phases"`
-	RawHash     string    `json:"raw_hash"`
+	Phases      []Phase     `json:"phases"`
+	Links       []PlanLink  `json:"links,omitempty"`
+	RawHash     string      `json:"raw_hash"`
+}
+
+// PlanLink is a local .md reference extracted from the markdown body. Target
+// is the literal string from the source (may be relative to the source file).
+// Label is the markdown link label when present; empty for bare paths.
+type PlanLink struct {
+	Target string `json:"target"`
+	Label  string `json:"label,omitempty"`
+	Line   int    `json:"line"`
 }
 
 type Frontmatter struct {

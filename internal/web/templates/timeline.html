@@ -1,0 +1,48 @@
+{{define "body"}}
+<section class="timeline">
+  <header class="timeline-header">
+    <p class="eyebrow">Timeline</p>
+    <h1>{{.Worktree.Name}}</h1>
+    <p class="timeline-meta">
+      {{if .ProjectName}}{{.ProjectName}} · {{end}}<code>{{.Worktree.Path}}</code>
+    </p>
+    <p>
+      <a class="timeline-back" href="/worktree/{{.Worktree.ID}}/facts">Raw facts →</a>
+    </p>
+  </header>
+  {{if .Rows}}
+  <table class="facts-table">
+    <thead>
+      <tr>
+        <th>Snapshot</th>
+        <th>When</th>
+        <th>Source</th>
+        <th>Commit</th>
+        <th>Tasks</th>
+        <th>Events</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr>
+        <td><code>{{.Snap.ID}}</code></td>
+        <td>{{humanAge .Snap.Timestamp}}</td>
+        <td><code>{{.SourceBase}}</code></td>
+        <td>{{if .ShortSHA}}<code>{{.ShortSHA}}</code>{{else}}—{{end}}</td>
+        <td>{{.TaskCount}}</td>
+        <td>{{.EventCount}}</td>
+        <td>
+          <a href="{{.BoardURL}}">Board</a>
+          <span class="timeline-sep">·</span>
+          <a href="{{.FactsURL}}">Facts</a>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No snapshots recorded for this worktree yet.</p>
+  {{end}}
+</section>
+{{end}}

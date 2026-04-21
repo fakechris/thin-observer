@@ -1,0 +1,47 @@
+{{define "body"}}
+<section class="facts">
+  <header class="facts-header">
+    <p class="eyebrow">Raw facts</p>
+    <h1>
+      {{if .AllWorktrees}}Recent snapshots{{else}}{{.Worktree.Name}}{{end}}
+    </h1>
+    {{if .Worktree}}
+      <p class="facts-meta">
+        {{if .ProjectName}}{{.ProjectName}} · {{end}}<code>{{.Worktree.Path}}</code>
+      </p>
+      <p><a class="facts-back" href="/facts">All worktrees →</a></p>
+    {{end}}
+  </header>
+  {{if .Snapshots}}
+  <table class="facts-table">
+    <thead>
+      <tr>
+        <th>Snapshot</th>
+        <th>When</th>
+        <th>Worktree</th>
+        <th>Source file</th>
+        <th>Commit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Snapshots}}
+      <tr>
+        <td><a href="/snapshot/{{.Snap.ID}}"><code>{{.Snap.ID}}</code></a></td>
+        <td>{{humanAge .Snap.Timestamp}}</td>
+        <td>
+          {{if .Worktree.ID}}
+            <a href="/worktree/{{.Worktree.ID}}/facts">{{.Worktree.Name}}</a>
+            {{if .ProjectName}}<span class="facts-proj">{{.ProjectName}}</span>{{end}}
+          {{else}}—{{end}}
+        </td>
+        <td><code class="facts-src">{{.Snap.SourceFile}}</code></td>
+        <td>{{if .ShortSHA}}<code>{{.ShortSHA}}</code>{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No snapshots recorded yet.</p>
+  {{end}}
+</section>
+{{end}}

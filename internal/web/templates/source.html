@@ -1,0 +1,25 @@
+{{define "body"}}
+<section class="source-view">
+  <a class="back" href="/task/{{.Task.ID}}">← back to task</a>
+  <p class="eyebrow">Source context</p>
+  <h1>{{.Task.CurrentTitle}}</h1>
+
+  <div class="source-summary">
+    <div>
+      <dt>source</dt>
+      <dd><code>{{.Source.File}}:{{.Source.Line}}</code></dd>
+    </div>
+    <div>
+      <dt>showing</dt>
+      <dd>lines {{.Source.StartLine}}-{{.Source.EndLine}}</dd>
+    </div>
+    <div>
+      <dt>worktree</dt>
+      <dd>{{if .Worktree}}{{.Worktree.Name}}{{else}}—{{end}}</dd>
+    </div>
+  </div>
+
+  <pre class="source-context" aria-label="Source markdown context">{{range .Source.Lines}}<code id="L{{.Number}}" class="{{if .Highlight}}line-highlight{{end}}"><a class="line-number" href="#L{{.Number}}">{{printf "%4d" .Number}}</a><span class="line-text">{{.Content}}</span></code>
+{{end}}</pre>
+</section>
+{{end}}

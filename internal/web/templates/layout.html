@@ -2,27 +2,88 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>thin-observer</title>
+  <script>
+    (function () {
+      var saved = null;
+      try {
+        saved = localStorage.getItem("thin-observer-theme");
+      } catch (error) {}
+      var prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+      document.documentElement.dataset.theme = saved || (prefersLight ? "light" : "dark");
+    })();
+  </script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/">thin-observer</a>
-    <nav>
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">to</span>
+      <span>
+        <strong>thin-observer</strong>
+        <small>passive project board</small>
+      </span>
+    </a>
+    <nav aria-label="Primary">
       <a href="/">Kanban</a>
       <a href="/archive">Archive</a>
     </nav>
+    <button class="theme-toggle" type="button" aria-label="Toggle color scheme" title="Toggle color scheme">
+      <span class="theme-toggle-dark" aria-hidden="true">Dark</span>
+      <span class="theme-toggle-light" aria-hidden="true">Light</span>
+    </button>
   </header>
   <main>{{block "body" .}}{{end}}</main>
   <footer class="bottombar">
     <span>passive observer — markdown is the agent's truth, not ours.</span>
   </footer>
+  <script>
+    (function () {
+      var storageKey = "thin-observer-theme";
+      var root = document.documentElement;
+      var button = document.querySelector(".theme-toggle");
+      var saved = null;
+      try {
+        saved = localStorage.getItem(storageKey);
+      } catch (error) {}
+      var prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+      var theme = saved || (prefersLight ? "light" : "dark");
+
+      function applyTheme(nextTheme) {
+        root.dataset.theme = nextTheme;
+        if (button) {
+          button.setAttribute("aria-pressed", nextTheme === "light" ? "true" : "false");
+        }
+      }
+
+      applyTheme(theme);
+      if (button) {
+        button.addEventListener("click", function () {
+          var nextTheme = root.dataset.theme === "light" ? "dark" : "light";
+          try {
+            localStorage.setItem(storageKey, nextTheme);
+          } catch (error) {}
+          applyTheme(nextTheme);
+        });
+      }
+    })();
+  </script>
 </body>
 </html>{{end}}
 
 {{define "card"}}
 <article class="card {{if .Task.MissingInRev}}card-missing{{end}}">
-  <a class="card-title" href="/task/{{.Task.ID}}">{{.Task.CurrentTitle}}</a>
+  <div class="card-header">
+    <a class="card-title" href="/task/{{.Task.ID}}">{{.Task.CurrentTitle}}</a>
+    {{if .PlanBasename}}
+      {{if .PlanID}}
+      <a class="plan-chip" href="/plan/{{.PlanID}}" title="Plan: {{.PlanBasename}}">{{.PlanBasename}}</a>
+      {{else}}
+      <span class="plan-chip plan-chip-orphan" title="Plan file: {{.PlanBasename}}">{{.PlanBasename}}</span>
+      {{end}}
+    {{end}}
+  </div>
   <div class="card-meta">
     <span class="wt">{{.Worktree.Name}}</span>
     {{if .ProjectName}}<span class="proj">{{.ProjectName}}</span>{{end}}

@@ -1,0 +1,67 @@
+{{define "body"}}
+<section class="plan-detail">
+  <header class="plan-header">
+    <p class="eyebrow">Plan · {{.Plan.Kind}}</p>
+    <h1>{{.Plan.Title}}</h1>
+    <dl class="plan-facts">
+      <div><dt>Source file</dt><dd><code>{{.Plan.SourceFile}}</code></dd></div>
+      {{if .Worktree}}<div><dt>Worktree</dt><dd>{{.Worktree.Name}}{{if .ProjectName}} · {{.ProjectName}}{{end}}</dd></div>{{end}}
+      <div><dt>Last seen</dt><dd>{{humanAge .Plan.LastSeenAt}}</dd></div>
+      {{if .LatestSnapshot}}
+      <div><dt>Latest snapshot</dt><dd><code>{{.LatestSnapshot.ID}}</code> · {{humanAge .LatestSnapshot.Timestamp}}{{if .LatestShortSHA}} · <code>{{.LatestShortSHA}}</code>{{end}}</dd></div>
+      {{end}}
+      <div><dt>Tasks</dt><dd>{{.TaskCount}}</dd></div>
+    </dl>
+  </header>
+
+  {{if or .OutgoingLinks .IncomingLinks}}
+  <section class="plan-links">
+    {{if .OutgoingLinks}}
+    <div class="plan-link-group">
+      <h2>Links out</h2>
+      <ul>
+        {{range .OutgoingLinks}}
+        <li>
+          {{if .ToPlan}}
+            <a href="/plan/{{.ToPlan.ID}}">{{.ToPlan.Title}}</a>
+            <code class="plan-link-target">{{.ToPlan.SourceFile}}</code>
+          {{else}}
+            <span class="plan-link-unresolved">unresolved</span>
+            <code class="plan-link-target">{{.Link.ToSourceFile}}</code>
+          {{end}}
+          {{if .Link.Label}}<span class="plan-link-label">"{{.Link.Label}}"</span>{{end}}
+          <span class="plan-link-line">L{{.Link.SourceLine}}</span>
+        </li>
+        {{end}}
+      </ul>
+    </div>
+    {{end}}
+    {{if .IncomingLinks}}
+    <div class="plan-link-group">
+      <h2>Links in</h2>
+      <ul>
+        {{range .IncomingLinks}}
+        <li>
+          <a href="/plan/{{.ToPlan.ID}}">{{.ToPlan.Title}}</a>
+          <code class="plan-link-target">{{.ToPlan.SourceFile}}</code>
+          {{if .Link.Label}}<span class="plan-link-label">"{{.Link.Label}}"</span>{{end}}
+        </li>
+        {{end}}
+      </ul>
+    </div>
+    {{end}}
+  </section>
+  {{end}}
+
+  <section class="plan-tasks">
+    <h2>Tasks <span class="count">({{len .Cards}})</span></h2>
+    {{if .Cards}}
+    <div class="plan-card-list">
+      {{range .Cards}}{{template "card" .}}{{end}}
+    </div>
+    {{else}}
+    <p class="empty">No tasks currently attributed to this plan file.</p>
+    {{end}}
+  </section>
+</section>
+{{end}}

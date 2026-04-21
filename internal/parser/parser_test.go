@@ -92,6 +92,76 @@ func TestPlainTodo(t *testing.T) {
 	}
 }
 
+func TestPlainListItemsInTaskSections(t *testing.T) {
+	doc := Parse(`# Task Plan
+
+## Current TODO
+
+1. **Docs closeout**
+   - Mark Phase 26 complete everywhere.
+   - Point active next reference to Phase 27.
+
+2. **Phase 27 Task 2: Worker runtime visibility**
+   - Make action worker state visible beside pipeline runtime state.
+
+## Decisions
+
+1. Do not treat this as a task.
+`)
+
+	var todo *Phase
+	for i := range doc.Phases {
+		if doc.Phases[i].Name == "Current TODO" {
+			todo = &doc.Phases[i]
+		}
+	}
+	if todo == nil {
+		t.Fatal("Current TODO phase not found")
+	}
+	if got, want := len(todo.Tasks), 2; got != want {
+		t.Fatalf("Current TODO tasks = %d, want %d", got, want)
+	}
+	if got, want := todo.Tasks[0].Title, "Docs closeout"; got != want {
+		t.Fatalf("first title = %q, want %q", got, want)
+	}
+	if got, want := todo.Tasks[1].Title, "Phase 27 Task 2: Worker runtime visibility"; got != want {
+		t.Fatalf("second title = %q, want %q", got, want)
+	}
+	for _, task := range todo.Tasks {
+		if task.Status != "pending" {
+			t.Fatalf("task %q status = %q, want pending", task.Title, task.Status)
+		}
+	}
+	for _, ph := range doc.Phases {
+		if ph.Name == "Decisions" && len(ph.Tasks) != 0 {
+			t.Fatalf("Decisions tasks = %d, want 0", len(ph.Tasks))
+		}
+	}
+}
+
+func TestPlainListSubBulletsAreNotTasks(t *testing.T) {
+	doc := Parse(`## Next Steps
+
+- Top-level follow-up
+  - nested explanation
+  - another nested explanation
+- Second follow-up
+`)
+
+	if got, want := len(doc.Phases), 1; got != want {
+		t.Fatalf("phases = %d, want %d", got, want)
+	}
+	if got, want := len(doc.Phases[0].Tasks), 2; got != want {
+		t.Fatalf("tasks = %d, want %d", got, want)
+	}
+	if got, want := doc.Phases[0].Tasks[0].Title, "Top-level follow-up"; got != want {
+		t.Fatalf("first task = %q, want %q", got, want)
+	}
+	if got, want := doc.Phases[0].Tasks[1].Title, "Second follow-up"; got != want {
+		t.Fatalf("second task = %q, want %q", got, want)
+	}
+}
+
 func TestProgressLog(t *testing.T) {
 	doc, err := ParseFile(filepath.Join("..", "..", "testdata", "plans", "progress-log.md"))
 	if err != nil {
@@ -145,6 +215,87 @@ func TestOrphanTasksNoHeading(t *testing.T) {
 	}
 	if !hasUngrouped {
 		t.Fatal("expected (ungrouped) phase for orphan tasks")
+	}
+}
+
+func TestExtractPlanLinks_MarkdownLink(t *testing.T) {
+	doc := Parse("See [Phase 27 plan](docs/plans/2026-04-21-phase27.md) for details.\n")
+	if len(doc.Links) != 1 {
+		t.Fatalf("links = %d, want 1 (%#v)", len(doc.Links), doc.Links)
+	}
+	l := doc.Links[0]
+	if l.Target != "docs/plans/2026-04-21-phase27.md" {
+		t.Errorf("target = %q", l.Target)
+	}
+	if l.Label != "Phase 27 plan" {
+		t.Errorf("label = %q", l.Label)
+	}
+	if l.Line != 1 {
+		t.Errorf("line = %d, want 1", l.Line)
+	}
+}
+
+func TestExtractPlanLinks_BarePath(t *testing.T) {
+	doc := Parse("Intro paragraph.\n\ndocs/plans/2026-04-21-phase27.md\n")
+	var found *PlanLink
+	for i := range doc.Links {
+		if doc.Links[i].Target == "docs/plans/2026-04-21-phase27.md" {
+			found = &doc.Links[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("bare path not extracted; got %#v", doc.Links)
+	}
+	if found.Label != "" {
+		t.Errorf("bare path label = %q, want empty", found.Label)
+	}
+	if found.Line != 3 {
+		t.Errorf("bare path line = %d, want 3", found.Line)
+	}
+}
+
+func TestExtractPlanLinks_IgnoresHTTP(t *testing.T) {
+	doc := Parse("External: [ignore](https://example.com/foo.md) and http://bar.com/baz.md here.\n")
+	for _, l := range doc.Links {
+		t.Errorf("unexpectedly extracted HTTP link: %#v", l)
+	}
+}
+
+func TestExtractPlanLinks_DedupesMarkdownLinkTarget(t *testing.T) {
+	// A markdown link that points at docs/plans/foo.md should produce exactly
+	// one PlanLink, not one from the md-link matcher plus a second from the
+	// bare-path matcher catching the same target inside the parens.
+	doc := Parse("[foo](docs/plans/foo.md)\n")
+	if len(doc.Links) != 1 {
+		t.Fatalf("links = %d, want 1 (%#v)", len(doc.Links), doc.Links)
+	}
+	if doc.Links[0].Label != "foo" {
+		t.Errorf("label = %q, want %q", doc.Links[0].Label, "foo")
+	}
+}
+
+func TestExtractPlanLinks_MultiplePerFile(t *testing.T) {
+	content := `## Notes
+
+[A](docs/plans/a.md) and [B](plans/b.md).
+
+plans/c.md
+
+[ignored](https://x.com/nope.md)
+`
+	doc := Parse(content)
+	targets := map[string]bool{}
+	for _, l := range doc.Links {
+		targets[l.Target] = true
+	}
+	for _, want := range []string{"docs/plans/a.md", "plans/b.md", "plans/c.md"} {
+		if !targets[want] {
+			t.Errorf("missing target %q; got %v", want, targets)
+		}
+	}
+	if targets["https://x.com/nope.md"] {
+		t.Error("https link must be excluded")
 	}
 }
 

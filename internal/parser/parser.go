@@ -29,8 +29,17 @@ var (
 	phaseHeaderRe = regexp.MustCompile(`^(#{1,3})\s+(.*?)(?:\s*\[(.+?)\])?\s*$`)
 	// "- [x] foo", "- [ ] foo", "- [X] foo", "- [~] foo", "* [ ] foo"
 	checklistRe = regexp.MustCompile(`^\s*[-*+]\s+\[([ xX~/\-])\]\s+(.*)$`)
+	// Top-level plain list item in task-carrying sections. Sub-bullets are
+	// intentionally excluded so they remain task details, not separate tasks.
+	plainTaskListItemRe = regexp.MustCompile(`^(?:[-*+]\s+|\d+[\.)]\s+)(.*\S)\s*$`)
 	// Optional task ref like "[T-07]" somewhere in the title (PRD-compat, but not required)
 	taskRefRe = regexp.MustCompile(`\[T-(\d+)\]`)
+	// Markdown link with a .md target. Accept anything inside the parens up to
+	// the closing paren or whitespace; the acceptor function filters later.
+	mdLinkRe = regexp.MustCompile(`\[([^\]]*)\]\(([^)\s]+)\)`)
+	// Conservative bare path match: must be rooted under docs/plans/ or plans/
+	// and end in .md. This avoids catching arbitrary .md names in prose.
+	barePlanPathRe = regexp.MustCompile(`((?:docs/plans/|plans/)[^\s,()\[\]]+\.md)`)
 	// YAML frontmatter delimiters
 	frontmatterDelim = "---"
 )
@@ -61,6 +70,13 @@ func Parse(content string) *PlanDoc {
 	for ; idx < len(lines); idx++ {
 		line := lines[idx]
 		lineNum := idx + 1 // 1-based
+
+		// Extract plan links regardless of whether this line also matches a
+		// task/phase pattern — a checklist item can carry a markdown link in
+		// its title, and we want both recorded.
+		if ls := extractPlanLinks(line, lineNum); len(ls) > 0 {
+			doc.Links = append(doc.Links, ls...)
+		}
 
 		// Phase header?
 		if m := phaseHeaderRe.FindStringSubmatch(line); m != nil && isPhaseLike(m[2], m[1]) {
@@ -93,6 +109,21 @@ func Parse(content string) *PlanDoc {
 			}
 			current.Tasks = append(current.Tasks, item)
 			continue
+		}
+
+		if current != nil && acceptsPlainTaskListItems(current.Name) {
+			if m := plainTaskListItemRe.FindStringSubmatch(line); m != nil {
+				item := TaskItem{
+					Title:  cleanTaskTitle(m[1]),
+					Status: "pending",
+					Line:   lineNum,
+				}
+				if refM := taskRefRe.FindStringSubmatch(m[1]); refM != nil {
+					item.Ref = "T-" + refM[1]
+				}
+				current.Tasks = append(current.Tasks, item)
+				continue
+			}
 		}
 	}
 
@@ -173,6 +204,72 @@ func rollupPhaseStatus(ph *Phase) string {
 
 func stripTaskRef(s string) string {
 	return taskRefRe.ReplaceAllString(s, "")
+}
+
+func cleanTaskTitle(s string) string {
+	title := strings.TrimSpace(stripTaskRef(s))
+	for _, pair := range [][2]string{
+		{"**", "**"},
+		{"__", "__"},
+		{"`", "`"},
+	} {
+		if strings.HasPrefix(title, pair[0]) && strings.HasSuffix(title, pair[1]) && len(title) >= len(pair[0])+len(pair[1]) {
+			title = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(title, pair[0]), pair[1]))
+		}
+	}
+	return title
+}
+
+// extractPlanLinks returns PlanLink entries found on a single line. Markdown
+// links are matched first; their span is masked out before the bare-path
+// scan so the same target isn't reported twice. HTTP(S) URLs are dropped.
+func extractPlanLinks(line string, lineNum int) []PlanLink {
+	var out []PlanLink
+	masked := []byte(line)
+	for _, idx := range mdLinkRe.FindAllStringSubmatchIndex(line, -1) {
+		label := line[idx[2]:idx[3]]
+		target := line[idx[4]:idx[5]]
+		if acceptPlanLinkTarget(target) {
+			out = append(out, PlanLink{Target: target, Label: label, Line: lineNum})
+		}
+		// Mask the entire link span regardless of whether we kept it — this
+		// prevents bare-path scan from re-matching the target inside the
+		// parens of an HTTPS link, for example.
+		for i := idx[0]; i < idx[1] && i < len(masked); i++ {
+			masked[i] = ' '
+		}
+	}
+	for _, m := range barePlanPathRe.FindAllStringSubmatch(string(masked), -1) {
+		target := m[1]
+		if acceptPlanLinkTarget(target) {
+			out = append(out, PlanLink{Target: target, Line: lineNum})
+		}
+	}
+	return out
+}
+
+// acceptPlanLinkTarget keeps only local .md references. HTTP URLs and
+// non-markdown targets are filtered out.
+func acceptPlanLinkTarget(target string) bool {
+	if target == "" {
+		return false
+	}
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		return false
+	}
+	path := target
+	if i := strings.Index(path, "#"); i >= 0 {
+		path = path[:i]
+	}
+	return strings.HasSuffix(path, ".md")
+}
+
+func acceptsPlainTaskListItems(phaseName string) bool {
+	name := strings.ToLower(phaseName)
+	return strings.Contains(name, "todo") ||
+		strings.Contains(name, "task") ||
+		strings.Contains(name, "next step") ||
+		strings.Contains(name, "action item")
 }
 
 func parseFrontmatter(lines []string, start int, fm *Frontmatter) int {
