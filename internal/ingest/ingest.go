@@ -31,34 +31,65 @@ func New(s *store.Store) *Ingester {
 
 // Apply persists a parsed doc against the given worktree and returns the
 // inserted snapshot ID and a summary of task changes.
+//
+// Everything (snapshot insert + task upserts + events) runs inside a single
+// transaction so a crash mid-apply cannot leave a snapshot row with a raw_hash
+// that blocks future re-ingestion of a partially-applied plan.
 func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *parser.PlanDoc) (*ApplyResult, error) {
 	now := time.Now().UTC()
 	snapID := newULID(now)
 
-	phasesJSON, _ := json.Marshal(doc.Phases)
-
-	// Skip if raw hash is unchanged from the last snapshot of this file.
-	latest, _ := in.Store.LatestSnapshot(ctx, worktree.ID, doc.SourceFile)
-	if latest != nil && latest.RawHash == doc.RawHash {
-		return &ApplyResult{SnapshotID: latest.ID, Unchanged: true}, nil
-	}
-
-	snap := store.Snapshot{
-		ID:         snapID,
-		WorktreeID: worktree.ID,
-		SourceFile: doc.SourceFile,
-		Timestamp:  now,
-		RawHash:    doc.RawHash,
-		PhasesJSON: string(phasesJSON),
-	}
-	if err := in.Store.InsertSnapshot(ctx, snap); err != nil {
-		return nil, fmt.Errorf("insert snapshot: %w", err)
-	}
-
-	// Load existing tasks for this worktree + source file.
-	all, err := in.Store.TasksByWorktree(ctx, worktree.ID)
+	phasesJSON, err := json.Marshal(doc.Phases)
 	if err != nil {
-		return nil, fmt.Errorf("load tasks: %w", err)
+		return nil, fmt.Errorf("marshal phases: %w", err)
+	}
+
+	var result ApplyResult
+	result.SnapshotID = snapID
+
+	txErr := in.Store.WithTx(ctx, func(tx *store.Store) error {
+		// Skip if raw hash is unchanged from the last snapshot of this file.
+		latest, _ := tx.LatestSnapshot(ctx, worktree.ID, doc.SourceFile)
+		if latest != nil && latest.RawHash == doc.RawHash {
+			result.SnapshotID = latest.ID
+			result.Unchanged = true
+			return nil
+		}
+
+		snap := store.Snapshot{
+			ID:         snapID,
+			WorktreeID: worktree.ID,
+			SourceFile: doc.SourceFile,
+			Timestamp:  now,
+			RawHash:    doc.RawHash,
+			PhasesJSON: string(phasesJSON),
+		}
+		if err := tx.InsertSnapshot(ctx, snap); err != nil {
+			return fmt.Errorf("insert snapshot: %w", err)
+		}
+
+		return in.applyInTx(ctx, tx, worktree, doc, snapID, now, &result)
+	})
+	if txErr != nil {
+		return nil, txErr
+	}
+	return &result, nil
+}
+
+// applyInTx runs the body of Apply against a transaction-scoped Store.
+func (in *Ingester) applyInTx(
+	ctx context.Context,
+	tx *store.Store,
+	worktree store.Worktree,
+	doc *parser.PlanDoc,
+	snapID string,
+	now time.Time,
+	result *ApplyResult,
+) error {
+	// Load existing tasks for this worktree + source file.
+	all, err := tx.TasksByWorktree(ctx, worktree.ID)
+	if err != nil {
+		return fmt.Errorf("load tasks: %w", err)
 	}
 	var existing []store.Task
 	for _, t := range all {
@@ -73,9 +104,6 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 			newItems = append(newItems, incoming{Phase: ph.Name, Task: t})
 		}
 	}
-
-	var result ApplyResult
-	result.SnapshotID = snapID
 
 	// Decide match strategy: Inferrer if provided, else exact-only.
 	var decisions []lineage.Decision
@@ -126,16 +154,18 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 			if d.Confidence > 0 {
 				old.Confidence = d.Confidence
 			}
-			if err := in.Store.UpsertTask(ctx, *old); err != nil {
-				return nil, err
+			if err := tx.UpsertTask(ctx, *old); err != nil {
+				return err
 			}
-			_ = in.Store.InsertEvent(ctx, store.Event{
+			if err := tx.InsertEvent(ctx, store.Event{
 				ID:         newULID(now),
 				Timestamp:  now,
 				Type:       "task_updated",
 				TaskID:     old.ID,
 				WorktreeID: worktree.ID,
-			})
+			}); err != nil {
+				return err
+			}
 			result.Updated++
 		case lineage.DecisionRename:
 			old := findByID(existing, d.OldID)
@@ -155,17 +185,19 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 			old.LastSnapshotID = snapID
 			old.Confidence = d.Confidence
 			old.MissingInRev = 0
-			if err := in.Store.UpsertTask(ctx, *old); err != nil {
-				return nil, err
+			if err := tx.UpsertTask(ctx, *old); err != nil {
+				return err
 			}
-			_ = in.Store.InsertEvent(ctx, store.Event{
+			if err := tx.InsertEvent(ctx, store.Event{
 				ID:         newULID(now),
 				Timestamp:  now,
 				Type:       "task_renamed",
 				TaskID:     old.ID,
 				WorktreeID: worktree.ID,
 				Data:       map[string]any{"from": old.Aliases, "to": newTitle, "confidence": d.Confidence},
-			})
+			}); err != nil {
+				return err
+			}
 			result.Renamed++
 		case lineage.DecisionNewTask:
 			nt := newItems[d.NewIndex]
@@ -183,17 +215,19 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 				LastSeenAt:     now,
 				LastSnapshotID: snapID,
 			}
-			if err := in.Store.UpsertTask(ctx, t); err != nil {
-				return nil, err
+			if err := tx.UpsertTask(ctx, t); err != nil {
+				return err
 			}
-			_ = in.Store.InsertEvent(ctx, store.Event{
+			if err := tx.InsertEvent(ctx, store.Event{
 				ID:         newULID(now),
 				Timestamp:  now,
 				Type:       "task_created",
 				TaskID:     t.ID,
 				WorktreeID: worktree.ID,
 				Data:       map[string]any{"title": t.CurrentTitle, "phase": t.Phase},
-			})
+			}); err != nil {
+				return err
+			}
 			result.Created++
 		case lineage.DecisionSplit:
 			parent := findByID(existing, d.OldID)
@@ -220,25 +254,27 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 					LastSnapshotID: snapID,
 					SplitFrom:      []string{parent.ID},
 				}
-				if err := in.Store.UpsertTask(ctx, child); err != nil {
-					return nil, err
+				if err := tx.UpsertTask(ctx, child); err != nil {
+					return err
 				}
 				childIDs = append(childIDs, child.ID)
 			}
 			parent.Status = "dropped" // umbrella: we mark superseded via supersedes=nil but status=dropped
 			parent.LastSeenAt = now
 			parent.MissingInRev = 0
-			if err := in.Store.UpsertTask(ctx, *parent); err != nil {
-				return nil, err
+			if err := tx.UpsertTask(ctx, *parent); err != nil {
+				return err
 			}
-			_ = in.Store.InsertEvent(ctx, store.Event{
+			if err := tx.InsertEvent(ctx, store.Event{
 				ID:         newULID(now),
 				Timestamp:  now,
 				Type:       "task_split_inferred",
 				TaskID:     parent.ID,
 				WorktreeID: worktree.ID,
 				Data:       map[string]any{"children": childIDs, "confidence": d.Confidence},
-			})
+			}); err != nil {
+				return err
+			}
 			result.Split++
 		case lineage.DecisionMerge:
 			// d.OldIDs are merged into one new item.
@@ -258,8 +294,8 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 				LastSnapshotID: snapID,
 				MergedFrom:     append([]string(nil), d.OldIDs...),
 			}
-			if err := in.Store.UpsertTask(ctx, child); err != nil {
-				return nil, err
+			if err := tx.UpsertTask(ctx, child); err != nil {
+				return err
 			}
 			for _, oid := range d.OldIDs {
 				if p := findByID(existing, oid); p != nil {
@@ -268,17 +304,21 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 					p.Supersedes = child.ID
 					p.LastSeenAt = now
 					p.MissingInRev = 0
-					_ = in.Store.UpsertTask(ctx, *p)
+					if err := tx.UpsertTask(ctx, *p); err != nil {
+						return err
+					}
 				}
 			}
-			_ = in.Store.InsertEvent(ctx, store.Event{
+			if err := tx.InsertEvent(ctx, store.Event{
 				ID:         newULID(now),
 				Timestamp:  now,
 				Type:       "task_merge_inferred",
 				TaskID:     child.ID,
 				WorktreeID: worktree.ID,
 				Data:       map[string]any{"parents": d.OldIDs, "confidence": d.Confidence},
-			})
+			}); err != nil {
+				return err
+			}
 			result.Merged++
 		}
 	}
@@ -294,22 +334,24 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 		e.MissingInRev++
 		if e.MissingInRev >= 2 && e.Status != "lost" {
 			e.Status = "lost"
-			_ = in.Store.InsertEvent(ctx, store.Event{
+			if err := tx.InsertEvent(ctx, store.Event{
 				ID:         newULID(now),
 				Timestamp:  now,
 				Type:       "task_lost",
 				TaskID:     e.ID,
 				WorktreeID: worktree.ID,
-			})
+			}); err != nil {
+				return err
+			}
 			result.Lost++
 		}
-		if err := in.Store.UpsertTask(ctx, e); err != nil {
-			return nil, err
+		if err := tx.UpsertTask(ctx, e); err != nil {
+			return err
 		}
 	}
 
 	// Event: plan_synced.
-	_ = in.Store.InsertEvent(ctx, store.Event{
+	if err := tx.InsertEvent(ctx, store.Event{
 		ID:         newULID(now),
 		Timestamp:  now,
 		Type:       "plan_synced",
@@ -324,8 +366,10 @@ func (in *Ingester) Apply(ctx context.Context, worktree store.Worktree, doc *par
 			"merged":      result.Merged,
 			"lost":        result.Lost,
 		},
-	})
-	return &result, nil
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ApplyResult is a summary returned by Apply.
