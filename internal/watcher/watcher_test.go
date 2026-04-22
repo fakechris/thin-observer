@@ -125,7 +125,11 @@ func TestRemoveEmitsRemovedKind(t *testing.T) {
 	// Speed the debounce window so the test completes quickly.
 	w.period = 50 * time.Millisecond
 	w.maxDelay = 200 * time.Millisecond
-	defer w.Close()
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("watcher.Close: %v", err)
+		}
+	})
 
 	if err := w.AddWorktree(root); err != nil {
 		t.Fatal(err)

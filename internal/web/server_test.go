@@ -1003,6 +1003,21 @@ func TestReasonFor(t *testing.T) {
 			task: store.Task{Status: "in_progress", Confidence: 1.0},
 			want: "",
 		},
+		{
+			// classify() routes done/skipped into the Done column before
+			// checking confidence. reasonFor must mirror that precedence,
+			// otherwise a rename that lowered confidence below 0.7 in the
+			// same snapshot it completed would render an attention reason
+			// inside a Done card — violating the card.Reason invariant.
+			name: "done with low confidence suppresses reason",
+			task: store.Task{Status: "done", Confidence: 0.65, Aliases: []string{"old"}},
+			want: "",
+		},
+		{
+			name: "skipped with low confidence suppresses reason",
+			task: store.Task{Status: "skipped", Confidence: 0.4},
+			want: "",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

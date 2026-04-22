@@ -29,9 +29,15 @@ func TestArchiveVanishedWorktrees(t *testing.T) {
 	}
 	missing := filepath.Join(dir, "gone-wt")
 
-	_ = s.UpsertProject(ctx, store.Project{ID: "p1", Name: "demo", RootPath: dir})
-	_ = s.UpsertWorktree(ctx, store.Worktree{ID: "w-alive", ProjectID: "p1", Name: "alive", Path: present})
-	_ = s.UpsertWorktree(ctx, store.Worktree{ID: "w-gone", ProjectID: "p1", Name: "gone", Path: missing})
+	if err := s.UpsertProject(ctx, store.Project{ID: "p1", Name: "demo", RootPath: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertWorktree(ctx, store.Worktree{ID: "w-alive", ProjectID: "p1", Name: "alive", Path: present}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertWorktree(ctx, store.Worktree{ID: "w-gone", ProjectID: "p1", Name: "gone", Path: missing}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Seed a task on the vanished worktree so we can prove it survives.
 	task := store.Task{
@@ -47,11 +53,17 @@ func TestArchiveVanishedWorktrees(t *testing.T) {
 		t.Fatalf("archiveVanishedWorktrees: %v", err)
 	}
 
-	active, _ := s.ListWorktrees(ctx, false)
+	active, err := s.ListWorktrees(ctx, false)
+	if err != nil {
+		t.Fatalf("list active: %v", err)
+	}
 	if len(active) != 1 || active[0].ID != "w-alive" {
 		t.Errorf("active worktrees = %+v, want only w-alive", active)
 	}
-	all, _ := s.ListWorktrees(ctx, true)
+	all, err := s.ListWorktrees(ctx, true)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
 	if len(all) != 2 {
 		t.Errorf("all worktrees = %d, want 2 (archive must preserve the row)", len(all))
 	}

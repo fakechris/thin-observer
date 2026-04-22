@@ -476,6 +476,12 @@ func bucketize(cards []card, now time.Time) []column {
 // rename, SplitFrom/MergedFrom arrays, status=="lost") so no event lookup is
 // needed at render time.
 func reasonFor(t store.Task) string {
+	// done/skipped tasks classify into the Done column regardless of
+	// confidence (see classify), so they must not carry an attention-column
+	// reason even when confidence happens to be low.
+	if t.Status == "done" || t.Status == "skipped" {
+		return ""
+	}
 	if t.Status == "lost" {
 		return "missing from recent plan updates"
 	}
