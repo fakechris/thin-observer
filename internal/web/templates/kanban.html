@@ -13,15 +13,23 @@
     {{end}}
   </nav>
   {{if .Plans}}
-  <nav class="plan-switcher" aria-label="Plan switcher">
-    <a class="plan-pill {{if not .SelectedPlanID}}selected{{end}}" href="/{{if .SelectedProjectID}}?project={{.SelectedProjectID}}{{end}}">All Plans</a>
-    {{range .Plans}}
-    <a class="plan-pill {{if .Selected}}selected{{end}}" href="{{.HREF}}" title="{{.WorktreeName}} · {{.Basename}}">
-      <span class="plan-pill-wt">{{.WorktreeName}}</span>
-      <span class="plan-pill-base">{{.Basename}}</span>
-    </a>
-    {{end}}
-  </nav>
+  <details class="plan-drawer" data-plan-count="{{len .Plans}}" {{if .SelectedPlanID}}open{{end}}>
+    <summary>
+      <span class="plan-drawer-title">Plan files</span>
+      <span class="plan-drawer-meta">
+        {{len .Plans}} files{{if .SelectedPlanName}} · {{.SelectedPlanName}}{{end}}
+      </span>
+    </summary>
+    <nav class="plan-switcher" aria-label="Plan switcher">
+      <a class="plan-pill {{if not .SelectedPlanID}}selected{{end}}" href="/{{if .SelectedProjectID}}?project={{.SelectedProjectID}}{{end}}">All Plans</a>
+      {{range .Plans}}
+      <a class="plan-pill {{if .Selected}}selected{{end}}" href="{{.HREF}}" title="{{.WorktreeName}} · {{.Basename}}">
+        <span class="plan-pill-wt">{{.WorktreeName}}</span>
+        <span class="plan-pill-base">{{.Basename}}</span>
+      </a>
+      {{end}}
+    </nav>
+  </details>
   {{end}}
 </section>
 <section class="kanban">

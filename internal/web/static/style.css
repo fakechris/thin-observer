@@ -362,16 +362,75 @@ main {
   color: var(--accent);
 }
 
-.plan-switcher {
+.plan-drawer {
   grid-column: 1 / -1;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
   margin-top: 10px;
   border: 1px dashed var(--border);
   border-radius: var(--r-4);
   background: color-mix(in srgb, var(--bg-raised) 70%, transparent);
-  padding: 8px 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.plan-drawer summary {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.plan-drawer summary::-webkit-details-marker {
+  display: none;
+}
+
+.plan-drawer summary::before {
+  content: "›";
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  transition: transform var(--dur-1) var(--ease);
+}
+
+.plan-drawer[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.plan-drawer-title {
+  flex: 1 1 auto;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plan-drawer-meta {
+  overflow: hidden;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-switcher {
+  display: flex;
+  max-height: 130px;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: auto;
+  border-top: 1px dashed var(--border-subtle);
+  padding: 8px 10px 10px;
 }
 
 .plan-pill {
@@ -833,6 +892,21 @@ main {
 .age {
   font-family: var(--font-mono);
   white-space: nowrap;
+}
+
+.history-link {
+  grid-column: 1 / -1;
+  justify-self: start;
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.history-link:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  text-decoration: none;
 }
 
 .card-phase {

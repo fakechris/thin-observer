@@ -55,7 +55,7 @@ func TestKanbanRenders(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"Inbox", "Active", "Done", "thin-observer", "feature"} {
+	for _, want := range []string{"Inbox", "Active", "Done", "thin-observer", "feature", "/worktree/w1/timeline", "Time Machine"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("kanban missing %q", want)
 		}
@@ -157,7 +157,9 @@ func TestKanbanShowsPlanSwitcherAndFiltersByPlan(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"plan-switcher",
+		"plan-drawer",
+		"Plan files",
+		"data-plan-count=\"2\"",
 		"task_plan.md",
 		"phase27.md",
 		"Root task",
