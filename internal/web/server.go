@@ -570,7 +570,13 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	revs, _ := s.store.TaskHistoryByTask(ctx, id)
+	revs, err := s.store.TaskHistoryByTask(ctx, id)
+	if err != nil {
+		// Log and continue: the primary task row already rendered. Silently
+		// omitting the history section otherwise leaves no trace of the DB
+		// fault for the operator to diagnose.
+		s.logger.Warn("task_history_failed", "task_id", id, "err", err)
+	}
 	history := make([]taskHistoryRow, 0, len(revs))
 	var prevStatus, prevTitle string
 	for i, rev := range revs {

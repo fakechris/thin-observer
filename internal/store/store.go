@@ -665,6 +665,11 @@ func (s *Store) UpsertPlanDoc(ctx context.Context, p PlanDoc) error {
 // presentFiles get missing_since set to `at` (if not already set). Rows whose
 // file is present get missing_since cleared. The row itself is never deleted
 // so downstream tasks retain a stable plan_id.
+//
+// presentFiles is structurally bounded: the watcher only scans the worktree
+// root plus three fixed subdirectories (plans/, docs/plans/, .workgraph/plans/),
+// so `len(presentFiles)` is orders of magnitude below SQLite's host-parameter
+// limit (~999 / 32766). No chunking needed.
 func (s *Store) MarkPlanDocsMissing(ctx context.Context, worktreeID string, presentFiles []string, at time.Time) error {
 	if at.IsZero() {
 		at = time.Now().UTC()
