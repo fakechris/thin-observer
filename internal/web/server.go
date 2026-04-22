@@ -489,6 +489,17 @@ type taskData struct {
 	Events    []store.Event
 	Overrides []store.Override
 	Lineage   lineagePanel
+	Revisions []taskHistoryRow
+}
+
+// taskHistoryRow decorates a TaskRevision with the href to its snapshot board
+// so the template stays declarative. Changed flags trim the rendered diff so
+// the reader sees the actual transitions, not a wall of duplicated rows.
+type taskHistoryRow struct {
+	Rev           store.TaskRevision
+	SnapshotHref  string
+	StatusChanged bool
+	TitleChanged  bool
 }
 
 type sourceData struct {
@@ -557,11 +568,31 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	revs, _ := s.store.TaskHistoryByTask(ctx, id)
+	history := make([]taskHistoryRow, 0, len(revs))
+	var prevStatus, prevTitle string
+	for i, rev := range revs {
+		row := taskHistoryRow{
+			Rev:          rev,
+			SnapshotHref: "/worktree/" + rev.WorktreeID + "/snapshot/" + rev.SnapshotID,
+		}
+		if i == 0 {
+			row.StatusChanged = true
+			row.TitleChanged = true
+		} else {
+			row.StatusChanged = rev.Status != prevStatus
+			row.TitleChanged = rev.Title != prevTitle
+		}
+		prevStatus, prevTitle = rev.Status, rev.Title
+		history = append(history, row)
+	}
+
 	s.render(w, "task", taskData{
 		Task: *t, Worktree: wt, Events: events, Overrides: overs,
 		Lineage: lineagePanel{
 			Parents: parents, Children: children, Renamed: t.RenamedFrom,
 		},
+		Revisions: history,
 	})
 }
 

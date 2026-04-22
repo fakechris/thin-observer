@@ -578,6 +578,72 @@ func TestTaskPageAndOverride(t *testing.T) {
 	}
 }
 
+func TestTaskPageRendersRevisionHistory(t *testing.T) {
+	// After two ingests that change a task's status, the task detail page
+	// should list both revisions with links back to their snapshots. Relying
+	// on events is not enough — events record what fired, revisions record
+	// the resulting task state.
+	dir := t.TempDir()
+	s, err := store.Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+
+	root := t.TempDir()
+	_ = s.UpsertProject(ctx, store.Project{ID: "p1", Name: "demo", RootPath: root})
+	w := store.Worktree{ID: "w1", ProjectID: "p1", Name: "feature", Path: root}
+	_ = s.UpsertWorktree(ctx, w)
+
+	plan := filepath.Join(root, "task_plan.md")
+	if err := os.WriteFile(plan, []byte("## Phase 1\n- [ ] alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := ingest.New(s)
+	d1, _ := parser.ParseFile(plan)
+	res1, err := in.Apply(ctx, w, d1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan, []byte("## Phase 1\n- [x] alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d2, _ := parser.ParseFile(plan)
+	res2, err := in.Apply(ctx, w, d2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, _ := s.TasksByWorktree(ctx, w.ID)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	taskID := tasks[0].ID
+
+	srv, err := New(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/task/"+taskID, nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("task detail status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	// Both revisions rendered, each linked to its own snapshot.
+	for _, want := range []string{
+		"Revisions",
+		"/worktree/" + w.ID + "/snapshot/" + res1.SnapshotID,
+		"/worktree/" + w.ID + "/snapshot/" + res2.SnapshotID,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("task page missing %q", want)
+		}
+	}
+}
+
 func TestTaskSourcePageRendersLineContext(t *testing.T) {
 	srv, s, w := testServer(t)
 	tasks, _ := s.TasksByWorktree(context.Background(), w.ID)

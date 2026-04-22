@@ -42,6 +42,19 @@
     {{end}}
   </div>
 
+  {{if .Revisions}}
+  <h2>Revisions</h2>
+  <ol class="task-history">
+    {{range .Revisions}}
+    <li>
+      <a href="{{.SnapshotHref}}"><time>{{.Rev.RecordedAt.Format "2006-01-02 15:04:05"}}</time></a>
+      <span class="badge badge-{{statusBadge .Rev.Status}}{{if not .StatusChanged}} badge-carry{{end}}">{{.Rev.Status}}</span>
+      {{if .TitleChanged}}<span class="hist-title">{{.Rev.Title}}</span>{{end}}
+    </li>
+    {{end}}
+  </ol>
+  {{end}}
+
   <h2>Events</h2>
   <ol class="timeline">
     {{range .Events}}
