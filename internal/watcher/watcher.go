@@ -214,6 +214,16 @@ func (w *Watcher) flush(now time.Time) {
 		kind := "write"
 		if e.removed {
 			kind = "removed"
+		} else if _, err := os.Stat(name); err != nil {
+			// fsnotify.Rename on macOS often fires only on the source path when
+			// a file is moved outside the watched dirs, so `removed` stays
+			// false but the file is gone. Re-stat at flush time so vanished
+			// paths still route through the missing-plan reconciliation.
+			if os.IsNotExist(err) {
+				kind = "removed"
+			} else {
+				w.logger.Warn("watcher.stat_failed", "file", name, "err", err)
+			}
 		}
 		select {
 		case w.Events <- ChangeEvent{WorktreePath: wt, File: name, Kind: kind, At: now}:

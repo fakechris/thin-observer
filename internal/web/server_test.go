@@ -340,9 +340,9 @@ func TestPlanDetailPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"Phase 27 Closeout",           // linked plan title
-		"task_plan.md",                // basename
-		"/plan/" + phaseID,            // resolved link target
+		"Phase 27 Closeout",               // linked plan title
+		"task_plan.md",                    // basename
+		"/plan/" + phaseID,                // resolved link target
 		"/worktree/" + w.ID + "/timeline", // time machine entry point
 	} {
 		if !strings.Contains(body, want) {
@@ -869,6 +869,21 @@ func TestArchivePageSurfacesArchivedWorktreeTasks(t *testing.T) {
 	if err := s.UpsertTask(ctx, stranded); err != nil {
 		t.Fatal(err)
 	}
+	// A dropped task on the archived worktree must appear ONLY inside its
+	// worktree group, not also under the global Dropped section — that's
+	// the "every task appears exactly once" invariant.
+	droppedOnArchived := store.Task{
+		ID:           "t-dropped-on-archived",
+		WorktreeID:   gone.ID,
+		ProjectID:    gone.ProjectID,
+		CurrentTitle: "Dropped on archived worktree",
+		Status:       "dropped",
+		Confidence:   1.0,
+		FirstSeenAt:  now, LastSeenAt: now,
+	}
+	if err := s.UpsertTask(ctx, droppedOnArchived); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.ArchiveWorktree(ctx, gone.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -885,10 +900,28 @@ func TestArchivePageSurfacesArchivedWorktreeTasks(t *testing.T) {
 		"Stranded in-progress task",
 		`href="/task/t-stranded"`,
 		`/worktree/w-gone/timeline`,
+		"Dropped on archived worktree",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("archive page missing %q", want)
 		}
+	}
+	// Invariant check: the dropped-on-archived task title appears exactly
+	// once — inside the archived group — and not duplicated into the
+	// global Dropped section above it.
+	if n := strings.Count(body, "Dropped on archived worktree"); n != 1 {
+		t.Errorf("dropped-on-archived task appeared %d times; want 1 (should be in archived group only, not also under global Dropped)", n)
+	}
+	// Position check: if the title does appear, it must be after the
+	// "Archived worktrees" heading, not in the global Dropped section.
+	droppedHeadIdx := strings.Index(body, "<h2>Dropped tasks</h2>")
+	archivedHeadIdx := strings.Index(body, "<h2>Archived worktrees</h2>")
+	titleIdx := strings.Index(body, "Dropped on archived worktree")
+	if droppedHeadIdx < 0 || archivedHeadIdx < 0 || titleIdx < 0 {
+		t.Fatalf("archive page missing expected headings or task title")
+	}
+	if titleIdx < archivedHeadIdx {
+		t.Errorf("dropped-on-archived task rendered before 'Archived worktrees' heading — likely inside global Dropped section")
 	}
 }
 

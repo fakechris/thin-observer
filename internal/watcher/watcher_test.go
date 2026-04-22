@@ -87,10 +87,10 @@ func TestListKnownPlanFilesIncludesDocsPlans(t *testing.T) {
 	}
 
 	wantBasenames := map[string]string{
-		"task_plan.md":  filepath.Join(root, "task_plan.md"),
-		"phase27.md":    filepath.Join(root, "docs/plans/phase27.md"),
-		"local.md":      filepath.Join(root, "plans/local.md"),
-		"graph.md":      filepath.Join(root, ".workgraph/plans/graph.md"),
+		"task_plan.md": filepath.Join(root, "task_plan.md"),
+		"phase27.md":   filepath.Join(root, "docs/plans/phase27.md"),
+		"local.md":     filepath.Join(root, "plans/local.md"),
+		"graph.md":     filepath.Join(root, ".workgraph/plans/graph.md"),
 	}
 	for base, absPath := range wantBasenames {
 		found := false
@@ -161,6 +161,57 @@ func TestRemoveEmitsRemovedKind(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for removed event")
+	}
+}
+
+// TestRenameAwayEmitsRemovedKind covers the case where a plan file is renamed
+// out of the watched tree. On macOS this fires fsnotify.Rename (not Remove),
+// so the debounce `removed` flag stays false — the flush path must re-stat and
+// classify the event as removed. Otherwise the daemon would try ParseFile on a
+// now-missing path and never call MarkPlanDocsMissing.
+func TestRenameAwayEmitsRemovedKind(t *testing.T) {
+	root := t.TempDir()
+	plan := filepath.Join(root, "task_plan.md")
+	if err := os.WriteFile(plan, []byte("# initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w, err := New(logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.period = 50 * time.Millisecond
+	w.maxDelay = 200 * time.Millisecond
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("watcher.Close: %v", err)
+		}
+	})
+
+	if err := w.AddWorktree(root); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+
+	// Rename the plan out of the watched tree. Destination sits outside `root`
+	// so no Create event fires inside the watched dir — only the source Rename.
+	dst := filepath.Join(t.TempDir(), "archived.md")
+	if err := os.Rename(plan, dst); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-w.Events:
+		if ev.Kind != "removed" {
+			t.Errorf("after rename-away, got Kind=%q want %q", ev.Kind, "removed")
+		}
+		if ev.File != plan {
+			t.Errorf("ev.File = %q want %q", ev.File, plan)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rename-away event")
 	}
 }
 
