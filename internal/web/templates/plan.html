@@ -4,8 +4,8 @@
     <p class="eyebrow">Plan · {{.Plan.Kind}}</p>
     <h1>{{.Plan.Title}}</h1>
     <dl class="plan-facts">
-      <div><dt>Source file</dt><dd><code>{{.Plan.SourceFile}}</code></dd></div>
-      {{if .Worktree}}<div><dt>Worktree</dt><dd>{{.Worktree.Name}}{{if .ProjectName}} · {{.ProjectName}}{{end}}</dd></div>{{end}}
+      <div><dt>Source file</dt><dd><code>{{.Plan.SourceFile}}</code>{{if .Plan.MissingSince}} <span class="plan-missing-flag" title="File not found on disk during last sweep">missing since {{.Plan.MissingSince.Format "2006-01-02 15:04"}}</span>{{end}}</dd></div>
+      {{if .Worktree}}<div><dt>Worktree</dt><dd>{{.Worktree.Name}}{{if .ProjectName}} · {{.ProjectName}}{{end}} <a class="timeline-link" href="/worktree/{{.Worktree.ID}}/timeline" title="Time Machine for {{.Worktree.Name}}">time machine →</a></dd></div>{{end}}
       <div><dt>Last seen</dt><dd>{{humanAge .Plan.LastSeenAt}}</dd></div>
       {{if .LatestSnapshot}}
       <div><dt>Latest snapshot</dt><dd><code>{{.LatestSnapshot.ID}}</code> · {{humanAge .LatestSnapshot.Timestamp}}{{if .LatestShortSHA}} · <code>{{.LatestShortSHA}}</code>{{end}}</dd></div>

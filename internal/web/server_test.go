@@ -60,6 +60,10 @@ func TestKanbanRenders(t *testing.T) {
 			t.Errorf("kanban missing %q", want)
 		}
 	}
+	// Per-card Time Machine link was noisy; it lives on task/plan detail now.
+	if strings.Contains(body, "/worktree/w1/timeline") {
+		t.Errorf("kanban should not render per-card timeline links")
+	}
 }
 
 func TestKanbanCanFilterByProject(t *testing.T) {
@@ -157,7 +161,9 @@ func TestKanbanShowsPlanSwitcherAndFiltersByPlan(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"plan-switcher",
+		"plan-drawer",
+		"Plan files",
+		"data-plan-count=\"2\"",
 		"task_plan.md",
 		"phase27.md",
 		"Root task",
@@ -193,6 +199,78 @@ func TestKanbanShowsPlanSwitcherAndFiltersByPlan(t *testing.T) {
 	}
 	if strings.Contains(b2, "Phase task") {
 		t.Error("plan filter did not hide task from other plan")
+	}
+}
+
+func TestPlanDrawerMarksMissingPlanFiles(t *testing.T) {
+	// Once a plan_doc has its missing_since set (simulating a sweep that
+	// didn't find the file on disk), both the plan drawer on the board and
+	// the plan detail page should show a visible "missing" marker.
+	dir := t.TempDir()
+	s, err := store.Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+
+	root := t.TempDir()
+	_ = s.UpsertProject(ctx, store.Project{ID: "p1", Name: "demo", RootPath: root})
+	w := store.Worktree{ID: "w1", ProjectID: "p1", Name: "feature", Path: root}
+	_ = s.UpsertWorktree(ctx, w)
+	_ = os.MkdirAll(filepath.Join(root, "docs/plans"), 0o755)
+	taskPlan := filepath.Join(root, "task_plan.md")
+	phasePlan := filepath.Join(root, "docs/plans/phase27.md")
+	_ = os.WriteFile(taskPlan, []byte("## TODO\n- [ ] Root task\n"), 0o644)
+	_ = os.WriteFile(phasePlan, []byte("## Phase\n- [ ] Phase task\n"), 0o644)
+	in := ingest.New(s)
+	d1, _ := parser.ParseFile(taskPlan)
+	_, _ = in.Apply(ctx, w, d1)
+	d2, _ := parser.ParseFile(phasePlan)
+	_, _ = in.Apply(ctx, w, d2)
+
+	// Delete phase plan from disk, run a sweep against the surviving file only.
+	_ = os.Remove(phasePlan)
+	if err := s.MarkPlanDocsMissing(ctx, w.ID, []string{taskPlan}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := New(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Board: drawer should render a missing marker on the phase pill.
+	r := httptest.NewRequest("GET", "/?project=p1", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("board status=%d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "plan-pill-missing") {
+		t.Errorf("board missing plan-pill-missing class")
+	}
+
+	// Plan detail: flag visible too.
+	docs, _ := s.PlanDocsByWorktree(ctx, w.ID)
+	var phaseID string
+	for _, d := range docs {
+		if d.SourceFile == phasePlan {
+			phaseID = d.ID
+		}
+	}
+	if phaseID == "" {
+		t.Fatal("phase plan_doc not found")
+	}
+	r2 := httptest.NewRequest("GET", "/plan/"+phaseID, nil)
+	rec2 := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec2, r2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("plan detail status=%d", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), "missing since") {
+		t.Errorf("plan detail missing 'missing since' flag")
 	}
 }
 
@@ -262,9 +340,10 @@ func TestPlanDetailPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"Phase 27 Closeout", // linked plan title
-		"task_plan.md",      // basename
-		"/plan/" + phaseID,  // resolved link target
+		"Phase 27 Closeout",           // linked plan title
+		"task_plan.md",                // basename
+		"/plan/" + phaseID,            // resolved link target
+		"/worktree/" + w.ID + "/timeline", // time machine entry point
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("root plan page missing %q", want)
@@ -541,6 +620,9 @@ func TestTaskPageAndOverride(t *testing.T) {
 	if !strings.Contains(body, "/task/"+taskID+"/source") {
 		t.Errorf("task page missing source context link")
 	}
+	if !strings.Contains(body, "/worktree/"+w.ID+"/timeline") {
+		t.Errorf("task page missing time machine link for its worktree")
+	}
 
 	// POST an override; expect redirect back to /task/<id>.
 	form := url.Values{}
@@ -565,6 +647,72 @@ func TestTaskPageAndOverride(t *testing.T) {
 	}
 	if t2.Status != "dropped" {
 		t.Errorf("task status=%q want dropped — override did not apply", t2.Status)
+	}
+}
+
+func TestTaskPageRendersRevisionHistory(t *testing.T) {
+	// After two ingests that change a task's status, the task detail page
+	// should list both revisions with links back to their snapshots. Relying
+	// on events is not enough — events record what fired, revisions record
+	// the resulting task state.
+	dir := t.TempDir()
+	s, err := store.Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+
+	root := t.TempDir()
+	_ = s.UpsertProject(ctx, store.Project{ID: "p1", Name: "demo", RootPath: root})
+	w := store.Worktree{ID: "w1", ProjectID: "p1", Name: "feature", Path: root}
+	_ = s.UpsertWorktree(ctx, w)
+
+	plan := filepath.Join(root, "task_plan.md")
+	if err := os.WriteFile(plan, []byte("## Phase 1\n- [ ] alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := ingest.New(s)
+	d1, _ := parser.ParseFile(plan)
+	res1, err := in.Apply(ctx, w, d1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan, []byte("## Phase 1\n- [x] alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d2, _ := parser.ParseFile(plan)
+	res2, err := in.Apply(ctx, w, d2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, _ := s.TasksByWorktree(ctx, w.ID)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	taskID := tasks[0].ID
+
+	srv, err := New(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/task/"+taskID, nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("task detail status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	// Both revisions rendered, each linked to its own snapshot.
+	for _, want := range []string{
+		"Revisions",
+		"/worktree/" + w.ID + "/snapshot/" + res1.SnapshotID,
+		"/worktree/" + w.ID + "/snapshot/" + res2.SnapshotID,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("task page missing %q", want)
+		}
 	}
 }
 

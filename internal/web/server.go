@@ -209,6 +209,7 @@ type planOption struct {
 	ProjectID    string
 	Selected     bool
 	HREF         string
+	Missing      bool // file was not on disk during the last sweep
 }
 
 type column struct {
@@ -418,6 +419,7 @@ func (s *Server) planOptions(ctx context.Context, projectID, selectedPlanID stri
 				ProjectID:    wt.ProjectID,
 				Selected:     d.ID == selectedPlanID,
 				HREF:         "/?" + q.Encode(),
+				Missing:      d.MissingSince != nil,
 			})
 		}
 	}
@@ -489,6 +491,17 @@ type taskData struct {
 	Events    []store.Event
 	Overrides []store.Override
 	Lineage   lineagePanel
+	Revisions []taskHistoryRow
+}
+
+// taskHistoryRow decorates a TaskRevision with the href to its snapshot board
+// so the template stays declarative. Changed flags trim the rendered diff so
+// the reader sees the actual transitions, not a wall of duplicated rows.
+type taskHistoryRow struct {
+	Rev           store.TaskRevision
+	SnapshotHref  string
+	StatusChanged bool
+	TitleChanged  bool
 }
 
 type sourceData struct {
@@ -557,11 +570,37 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	revs, err := s.store.TaskHistoryByTask(ctx, id)
+	if err != nil {
+		// Log and continue: the primary task row already rendered. Silently
+		// omitting the history section otherwise leaves no trace of the DB
+		// fault for the operator to diagnose.
+		s.logger.Warn("task_history_failed", "task_id", id, "err", err)
+	}
+	history := make([]taskHistoryRow, 0, len(revs))
+	var prevStatus, prevTitle string
+	for i, rev := range revs {
+		row := taskHistoryRow{
+			Rev:          rev,
+			SnapshotHref: "/worktree/" + rev.WorktreeID + "/snapshot/" + rev.SnapshotID,
+		}
+		if i == 0 {
+			row.StatusChanged = true
+			row.TitleChanged = true
+		} else {
+			row.StatusChanged = rev.Status != prevStatus
+			row.TitleChanged = rev.Title != prevTitle
+		}
+		prevStatus, prevTitle = rev.Status, rev.Title
+		history = append(history, row)
+	}
+
 	s.render(w, "task", taskData{
 		Task: *t, Worktree: wt, Events: events, Overrides: overs,
 		Lineage: lineagePanel{
 			Parents: parents, Children: children, Renamed: t.RenamedFrom,
 		},
+		Revisions: history,
 	})
 }
 

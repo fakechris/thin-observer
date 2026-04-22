@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -133,6 +134,62 @@ func TestPlanDocRoundTrip(t *testing.T) {
 	}
 	if len(list) != 1 {
 		t.Fatalf("list len = %d, want 1", len(list))
+	}
+}
+
+func TestMarkPlanDocsMissingAndResurrection(t *testing.T) {
+	// Two plan_docs; one is present on disk, one vanished. After a sweep with
+	// only the present file, the vanished row must get missing_since set and
+	// the present row must stay clear. On the next sweep that lists both
+	// files again, the previously-missing row must be cleared (resurrection).
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	_ = s.UpsertProject(ctx, Project{ID: "p1", Name: "demo", RootPath: "/tmp/demo"})
+	_ = s.UpsertWorktree(ctx, Worktree{ID: "w1", ProjectID: "p1", Name: "main", Path: "/tmp/demo/main"})
+	now := time.Now().UTC()
+	_ = s.UpsertPlanDoc(ctx, PlanDoc{
+		ID: "pd1", WorktreeID: "w1", SourceFile: "/tmp/demo/main/task_plan.md",
+		Title: "Roadmap", Kind: "task_plan", LastSeenAt: now,
+	})
+	_ = s.UpsertPlanDoc(ctx, PlanDoc{
+		ID: "pd2", WorktreeID: "w1", SourceFile: "/tmp/demo/main/docs/plans/phase27.md",
+		Title: "Phase 27", Kind: "detailed_plan", LastSeenAt: now,
+	})
+
+	// Sweep 1: only pd1's file is present on disk. pd2 should go missing.
+	at1 := now.Add(time.Minute)
+	if err := s.MarkPlanDocsMissing(ctx, "w1", []string{"/tmp/demo/main/task_plan.md"}, at1); err != nil {
+		t.Fatal(err)
+	}
+	pd1, _ := s.PlanDocByWorktreeAndFile(ctx, "w1", "/tmp/demo/main/task_plan.md")
+	pd2, _ := s.PlanDocByWorktreeAndFile(ctx, "w1", "/tmp/demo/main/docs/plans/phase27.md")
+	if pd1.MissingSince != nil {
+		t.Errorf("pd1 (present file) wrongly flagged missing: %v", *pd1.MissingSince)
+	}
+	if pd2.MissingSince == nil {
+		t.Fatal("pd2 (absent file) not flagged missing")
+	}
+	if !pd2.MissingSince.Equal(at1) {
+		t.Errorf("pd2 missing_since = %v, want %v", *pd2.MissingSince, at1)
+	}
+
+	// Sweep 2: pd2's file returns. Flag should be cleared.
+	at2 := at1.Add(time.Minute)
+	if err := s.MarkPlanDocsMissing(ctx, "w1", []string{
+		"/tmp/demo/main/task_plan.md",
+		"/tmp/demo/main/docs/plans/phase27.md",
+	}, at2); err != nil {
+		t.Fatal(err)
+	}
+	pd2, _ = s.PlanDocByWorktreeAndFile(ctx, "w1", "/tmp/demo/main/docs/plans/phase27.md")
+	if pd2.MissingSince != nil {
+		t.Errorf("pd2 still flagged missing after resurrection: %v", *pd2.MissingSince)
 	}
 }
 
@@ -309,6 +366,46 @@ func TestTaskRevisionAppendAndQuery(t *testing.T) {
 	}
 	if len(bySnap) != 1 || bySnap[0].Title != "alpha" {
 		t.Errorf("by snapshot s1 = %+v", bySnap)
+	}
+}
+
+// TestOpenMigratesPreSnapshotEventTable simulates opening a real pre-upgrade
+// database. The old event table lacks snapshot_id; Open must migrate it before
+// applying schema objects that reference event(snapshot_id).
+func TestOpenMigratesPreSnapshotEventTable(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "db.sqlite")
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE event (
+			id          TEXT PRIMARY KEY,
+			timestamp   TEXT NOT NULL,
+			type        TEXT NOT NULL,
+			task_id     TEXT,
+			worktree_id TEXT,
+			data_json   TEXT NOT NULL DEFAULT '{}'
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open old DB: %v", err)
+	}
+	defer s.Close()
+
+	has, err := columnExists(context.Background(), s.DB, "event", "snapshot_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("Open did not add event.snapshot_id")
 	}
 }
 

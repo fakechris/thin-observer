@@ -63,6 +63,9 @@ type Event struct {
 
 // PlanDoc is one row per watched markdown file. "Kind" is an observer-side
 // classification (task_plan / progress / findings / detailed_plan / unknown).
+// MissingSince is set when a full worktree sweep cannot find the source file
+// on disk; the row itself stays so we never lose history of tasks that lived
+// in the deleted plan. Cleared the next time the file reappears.
 type PlanDoc struct {
 	ID             string
 	WorktreeID     string
@@ -71,6 +74,7 @@ type PlanDoc struct {
 	Kind           string
 	LastSnapshotID string
 	LastSeenAt     time.Time
+	MissingSince   *time.Time
 }
 
 // PlanLink is a cross-plan reference extracted from markdown. ToSourceFile is
