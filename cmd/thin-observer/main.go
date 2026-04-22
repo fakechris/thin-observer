@@ -146,6 +146,14 @@ func watchCmd() *cobra.Command {
 				return err
 			}
 
+			// Auto-archive any worktree in the DB whose path no longer exists.
+			// Runs after registerAll so a newly-re-registered worktree is
+			// considered active again (UpsertWorktree flips status back to
+			// active unless already archived — see store.UpsertWorktree).
+			if err := archiveVanishedWorktrees(ctx, s, logger); err != nil {
+				logger.Warn("archive_vanished_failed", "err", err)
+			}
+
 			if once {
 				logger.Info("watch.once_complete")
 				return nil
@@ -165,6 +173,19 @@ func watchCmd() *cobra.Command {
 					}
 					wt := wtByPath[ev.WorktreePath]
 					if wt == nil {
+						continue
+					}
+					if ev.Kind == "removed" {
+						// Reconcile live: rescan the worktree's plan dirs so
+						// any plan_doc whose file just vanished is flagged
+						// missing immediately. We don't delete the row —
+						// tasks still need a stable plan_id for lineage.
+						plans := watcher.ListKnownPlanFiles(wt.Path)
+						if err := s.MarkPlanDocsMissing(ctx, wt.ID, plans, ev.At.UTC()); err != nil {
+							logger.Warn("reconcile_plans_live", "wt", wt.Name, "file", ev.File, "err", err)
+						} else {
+							logger.Info("plan_removed", "wt", wt.Name, "file", filepath.Base(ev.File))
+						}
 						continue
 					}
 					doc, err := parser.ParseFile(ev.File)
@@ -193,6 +214,38 @@ func watchCmd() *cobra.Command {
 	c.Flags().StringVar(&configPath, "config", "", "path to config.yaml (default ~/.config/thin-observer/config.yaml)")
 	c.Flags().BoolVar(&once, "once", false, "run one discovery+ingest pass and exit (no fsnotify loop)")
 	return c
+}
+
+// archiveVanishedWorktrees walks every active worktree in the DB and archives
+// any whose path no longer exists on disk. Invariant #6: worktree death does
+// not equal task death — the row and its tasks survive, the status field just
+// flips to "archived" so the main board hides them but the archive page still
+// shows the history.
+//
+// stat errors other than IsNotExist (e.g., permissions) are logged and leave
+// the row alone. Transient filesystem flakiness must not silently archive a
+// live worktree.
+func archiveVanishedWorktrees(ctx context.Context, s *store.Store, logger *slog.Logger) error {
+	active, err := s.ListWorktrees(ctx, false)
+	if err != nil {
+		return fmt.Errorf("list active worktrees: %w", err)
+	}
+	for _, wt := range active {
+		_, err := os.Stat(wt.Path)
+		if err == nil {
+			continue
+		}
+		if !os.IsNotExist(err) {
+			logger.Warn("archive_check_failed", "wt", wt.Name, "path", wt.Path, "err", err)
+			continue
+		}
+		if err := s.ArchiveWorktree(ctx, wt.ID); err != nil {
+			logger.Warn("archive_failed", "wt", wt.Name, "err", err)
+			continue
+		}
+		logger.Info("worktree_archived", "wt", wt.Name, "reason", "path_vanished")
+	}
+	return nil
 }
 
 // registerAll upserts project+worktree rows, adds each worktree to the watcher,

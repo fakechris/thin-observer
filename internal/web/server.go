@@ -1159,8 +1159,18 @@ func (s *Server) handleSnapshotBoard(w http.ResponseWriter, r *http.Request) {
 
 // ---- Archive ----
 
+// archivedWorktreeGroup bundles an archived worktree with the tasks that lived
+// inside it. Without this grouping, any task that wasn't status=dropped|lost
+// at the time its worktree was archived becomes unreachable from the UI —
+// violating invariant #6 (worktree death ≠ task death).
+type archivedWorktreeGroup struct {
+	Worktree   store.Worktree
+	Cards      []card
+	TimelineURL string
+}
+
 type archiveData struct {
-	ArchivedWorktrees []store.Worktree
+	ArchivedWorktrees []archivedWorktreeGroup
 	DroppedTasks      []card
 	LostTasks         []card
 }
@@ -1172,19 +1182,38 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	data := archiveData{}
 	wts, _ := s.store.ListWorktrees(ctx, true)
+	// Group archived-worktree cards by worktree ID. A task belongs in one
+	// bucket only: if its worktree is archived it lands in that group; the
+	// global Dropped / Lost sections are for live worktrees, so every task
+	// appears exactly once.
+	archivedByID := map[string]*archivedWorktreeGroup{}
 	for _, wt := range wts {
-		if wt.Status == "archived" {
-			data.ArchivedWorktrees = append(data.ArchivedWorktrees, wt)
+		if wt.Status != "archived" {
+			continue
+		}
+		archivedByID[wt.ID] = &archivedWorktreeGroup{
+			Worktree:    wt,
+			TimelineURL: "/worktree/" + wt.ID + "/timeline",
 		}
 	}
+	data := archiveData{}
 	for _, c := range cards {
-		switch {
-		case c.Task.Status == "dropped":
+		if g, ok := archivedByID[c.Task.WorktreeID]; ok {
+			g.Cards = append(g.Cards, c)
+			continue
+		}
+		switch c.Task.Status {
+		case "dropped":
 			data.DroppedTasks = append(data.DroppedTasks, c)
-		case c.Task.Status == "lost":
+		case "lost":
 			data.LostTasks = append(data.LostTasks, c)
+		}
+	}
+	// Preserve ListWorktrees ordering.
+	for _, wt := range wts {
+		if g, ok := archivedByID[wt.ID]; ok {
+			data.ArchivedWorktrees = append(data.ArchivedWorktrees, *g)
 		}
 	}
 	s.render(w, "archive", data)

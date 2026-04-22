@@ -1,10 +1,14 @@
 package watcher
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 )
 
 // makeTree creates files inside root. Directories are created implicitly.
@@ -99,6 +103,64 @@ func TestListKnownPlanFilesIncludesDocsPlans(t *testing.T) {
 		if !found {
 			t.Errorf("ListKnownPlanFiles missing %s (%s); got: %v", base, absPath, got)
 		}
+	}
+}
+
+// TestRemoveEmitsRemovedKind drives the watcher end-to-end: write a plan file,
+// drain the write event, remove the file, and assert the next emitted event
+// carries Kind == "removed". This is what the daemon consumes to call
+// MarkPlanDocsMissing in real time instead of waiting for startup reconcile.
+func TestRemoveEmitsRemovedKind(t *testing.T) {
+	root := t.TempDir()
+	plan := filepath.Join(root, "task_plan.md")
+	if err := os.WriteFile(plan, []byte("# initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w, err := New(logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Speed the debounce window so the test completes quickly.
+	w.period = 50 * time.Millisecond
+	w.maxDelay = 200 * time.Millisecond
+	defer w.Close()
+
+	if err := w.AddWorktree(root); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+
+	// Touch the file to trigger one write event; drain it so the removal
+	// event below is what the next receive observes.
+	if err := os.WriteFile(plan, []byte("# updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-w.Events:
+		if ev.Kind != "write" {
+			t.Fatalf("expected write kind, got %q", ev.Kind)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial write event")
+	}
+
+	if err := os.Remove(plan); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-w.Events:
+		if ev.Kind != "removed" {
+			t.Errorf("after os.Remove, got Kind=%q want %q", ev.Kind, "removed")
+		}
+		if ev.File != plan {
+			t.Errorf("ev.File = %q want %q", ev.File, plan)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for removed event")
 	}
 }
 

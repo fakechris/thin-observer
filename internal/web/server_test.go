@@ -844,6 +844,54 @@ func TestArchivePage(t *testing.T) {
 	}
 }
 
+func TestArchivePageSurfacesArchivedWorktreeTasks(t *testing.T) {
+	srv, s, _ := testServer(t)
+	ctx := context.Background()
+
+	// Second worktree that we'll archive; seed a task on it that isn't
+	// dropped or lost — exactly the case that used to be invisible.
+	gone := store.Worktree{
+		ID: "w-gone", ProjectID: "p1", Name: "retired-feature", Path: "/tmp/retired",
+	}
+	if err := s.UpsertWorktree(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	stranded := store.Task{
+		ID:           "t-stranded",
+		WorktreeID:   gone.ID,
+		ProjectID:    gone.ProjectID,
+		CurrentTitle: "Stranded in-progress task",
+		Status:       "in_progress",
+		Confidence:   1.0,
+		FirstSeenAt:  now, LastSeenAt: now,
+	}
+	if err := s.UpsertTask(ctx, stranded); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ArchiveWorktree(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest("GET", "/archive", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != 200 {
+		t.Fatalf("archive status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"retired-feature",
+		"Stranded in-progress task",
+		`href="/task/t-stranded"`,
+		`/worktree/w-gone/timeline`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("archive page missing %q", want)
+		}
+	}
+}
+
 func TestStaticCSSServed(t *testing.T) {
 	srv, _, _ := testServer(t)
 	r := httptest.NewRequest("GET", "/static/style.css", nil)

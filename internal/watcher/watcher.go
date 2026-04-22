@@ -18,9 +18,13 @@ import (
 )
 
 // ChangeEvent signals that a plan-family file has changed (or may have).
+// Kind is "write" for create/write/rename events and "removed" when the file
+// has disappeared from disk. Consumers use Kind to route between re-ingest
+// and plan-doc-missing reconciliation without rescanning the worktree.
 type ChangeEvent struct {
 	WorktreePath string
 	File         string
+	Kind         string
 	At           time.Time
 }
 
@@ -45,10 +49,13 @@ type Watcher struct {
 
 // debounceEntry records the first and last activity time for one file.
 // `first` bounds total delay (streaming writers); `last` drives the quiet
-// window (batch writers).
+// window (batch writers). `removed` flips true on fsnotify.Remove and back
+// to false on any subsequent Write/Create — atomic-save flows that fire
+// Remove→Create would otherwise emit a spurious "removed" event.
 type debounceEntry struct {
-	first time.Time
-	last  time.Time
+	first   time.Time
+	last    time.Time
+	removed bool
 }
 
 func New(logger *slog.Logger) (*Watcher, error) {
@@ -142,7 +149,7 @@ func (w *Watcher) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
+			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
 				continue
 			}
 			base := filepath.Base(ev.Name)
@@ -158,6 +165,7 @@ func (w *Watcher) Run(ctx context.Context) {
 				}
 			}
 			now := time.Now()
+			isRemove := ev.Op&fsnotify.Remove != 0
 			w.mu.Lock()
 			e, ok := w.debounce[ev.Name]
 			if !ok {
@@ -165,6 +173,14 @@ func (w *Watcher) Run(ctx context.Context) {
 				w.debounce[ev.Name] = e
 			}
 			e.last = now
+			// Atomic writes (rename-over) can fire Remove→Create on the same
+			// path; a Write/Create after a Remove means the file is back, so
+			// clear the flag. A fresh Remove sets it.
+			if isRemove {
+				e.removed = true
+			} else {
+				e.removed = false
+			}
 			w.mu.Unlock()
 		case err, ok := <-w.fs.Errors:
 			if !ok {
@@ -195,8 +211,12 @@ func (w *Watcher) flush(now time.Time) {
 			delete(w.debounce, name)
 			continue
 		}
+		kind := "write"
+		if e.removed {
+			kind = "removed"
+		}
 		select {
-		case w.Events <- ChangeEvent{WorktreePath: wt, File: name, At: now}:
+		case w.Events <- ChangeEvent{WorktreePath: wt, File: name, Kind: kind, At: now}:
 		default:
 			w.logger.Warn("watcher.events_full")
 		}

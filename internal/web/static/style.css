@@ -1091,6 +1091,49 @@ form {
   font-size: 11px;
 }
 
+.archived-wt-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 8px 0 0;
+}
+
+.archived-wt-group {
+  border: 1px solid var(--border);
+  border-radius: var(--r-4);
+  background: color-mix(in srgb, var(--bg-raised) 94%, transparent);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.archived-wt-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.archived-wt-head strong {
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.archived-wt-head code {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.archived-wt-head .count {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
 .back {
   display: inline-flex;
   min-height: 28px;
