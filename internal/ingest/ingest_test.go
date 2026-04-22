@@ -405,6 +405,88 @@ title: Phase 27 Closeout
 	}
 }
 
+func TestApplyBackfillsPlanLinkWhenTargetArrivesLater(t *testing.T) {
+	// Regression: if plan A (task_plan.md) links to plan B (docs/plans/foo.md)
+	// but B is ingested later, A's link must be unresolved right after A's
+	// ingest and become resolved after B's ingest. This pins down the
+	// ResolvePlanLinkTargets back-fill behaviour — not just the
+	// "both-ingested-then-checked" case already covered elsewhere.
+	s := setupStore(t)
+	w := seedWorktree(t, s)
+	in := New(s)
+	ctx := context.Background()
+
+	root := t.TempDir()
+	w.Path = root
+	_ = s.UpsertWorktree(ctx, w)
+	if err := os.MkdirAll(filepath.Join(root, "docs/plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taskPlan := filepath.Join(root, "task_plan.md")
+	phasePlan := filepath.Join(root, "docs/plans/phase27.md")
+	writeFile(t, taskPlan, `## TODO
+
+- [ ] See [Phase 27 plan](docs/plans/phase27.md)
+`)
+
+	// Step 1: ingest A only. B does not exist yet.
+	d1, err := parser.ParseFile(taskPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Apply(ctx, w, d1); err != nil {
+		t.Fatal(err)
+	}
+	rootDoc, err := s.PlanDocByWorktreeAndFile(ctx, w.ID, taskPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err := s.LinksFrom(ctx, rootDoc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("after A-only ingest: links = %d, want 1", len(links))
+	}
+	if links[0].ToPlanID != "" {
+		t.Fatalf("after A-only ingest: link already resolved to %q — expected NULL",
+			links[0].ToPlanID)
+	}
+
+	// Step 2: B arrives. The resolver runs as part of B's ingest and must
+	// back-fill A's outgoing link.
+	writeFile(t, phasePlan, `---
+title: Phase 27 Closeout
+---
+
+## Phase 27
+
+- [ ] Wire action queue
+`)
+	d2, err := parser.ParseFile(phasePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Apply(ctx, w, d2); err != nil {
+		t.Fatal(err)
+	}
+	phaseDoc, err := s.PlanDocByWorktreeAndFile(ctx, w.ID, phasePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links, err = s.LinksFrom(ctx, rootDoc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("after B ingest: links = %d, want 1", len(links))
+	}
+	if links[0].ToPlanID != phaseDoc.ID {
+		t.Errorf("after B ingest: link to_plan_id = %q, want %q — back-fill did not run",
+			links[0].ToPlanID, phaseDoc.ID)
+	}
+}
+
 func TestApplyStoresCommitSHA(t *testing.T) {
 	s := setupStore(t)
 	w := seedWorktree(t, s)
