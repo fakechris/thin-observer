@@ -47,6 +47,10 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sql.Open: %w", err)
 	}
+	if err := migrate(context.Background(), db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	if _, err := db.ExecContext(context.Background(), schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
@@ -72,6 +76,13 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		{"event", "snapshot_id", `ALTER TABLE event ADD COLUMN snapshot_id TEXT REFERENCES snapshot(id)`},
 	}
 	for _, s := range steps {
+		table, err := tableExists(ctx, db, s.table)
+		if err != nil {
+			return fmt.Errorf("check %s: %w", s.table, err)
+		}
+		if !table {
+			continue
+		}
 		has, err := columnExists(ctx, db, s.table, s.column)
 		if err != nil {
 			return fmt.Errorf("check %s.%s: %w", s.table, s.column, err)
@@ -84,6 +95,13 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func tableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
+	var count int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count)
+	return count > 0, err
 }
 
 func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {

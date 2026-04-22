@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -309,6 +310,46 @@ func TestTaskRevisionAppendAndQuery(t *testing.T) {
 	}
 	if len(bySnap) != 1 || bySnap[0].Title != "alpha" {
 		t.Errorf("by snapshot s1 = %+v", bySnap)
+	}
+}
+
+// TestOpenMigratesPreSnapshotEventTable simulates opening a real pre-upgrade
+// database. The old event table lacks snapshot_id; Open must migrate it before
+// applying schema objects that reference event(snapshot_id).
+func TestOpenMigratesPreSnapshotEventTable(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "db.sqlite")
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE event (
+			id          TEXT PRIMARY KEY,
+			timestamp   TEXT NOT NULL,
+			type        TEXT NOT NULL,
+			task_id     TEXT,
+			worktree_id TEXT,
+			data_json   TEXT NOT NULL DEFAULT '{}'
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open old DB: %v", err)
+	}
+	defer s.Close()
+
+	has, err := columnExists(context.Background(), s.DB, "event", "snapshot_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("Open did not add event.snapshot_id")
 	}
 }
 
