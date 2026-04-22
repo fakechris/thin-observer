@@ -877,6 +877,133 @@ func TestFaviconDoesNotPolluteConsole(t *testing.T) {
 	}
 }
 
+func TestReasonFor(t *testing.T) {
+	cases := []struct {
+		name string
+		task store.Task
+		want string
+	}{
+		{
+			name: "lost task",
+			task: store.Task{Status: "lost", Confidence: 1.0},
+			want: "missing from recent plan updates",
+		},
+		{
+			name: "low-confidence rename carries previous title",
+			task: store.Task{
+				Status:       "in_progress",
+				Confidence:   0.62,
+				CurrentTitle: "Ship feature X",
+				Aliases:      []string{"Prototype feature X"},
+			},
+			want: `renamed from "Prototype feature X" @ 0.62`,
+		},
+		{
+			name: "low-confidence split child",
+			task: store.Task{Status: "pending", Confidence: 0.55, SplitFrom: []string{"parent-1"}},
+			want: "split from earlier task @ 0.55",
+		},
+		{
+			name: "low-confidence merge child",
+			task: store.Task{
+				Status:     "pending",
+				Confidence: 0.5,
+				MergedFrom: []string{"a", "b", "c"},
+			},
+			want: "merged from 3 earlier tasks @ 0.50",
+		},
+		{
+			name: "low-confidence fallback",
+			task: store.Task{Status: "pending", Confidence: 0.3},
+			want: "low confidence @ 0.30",
+		},
+		{
+			name: "healthy task has no reason",
+			task: store.Task{Status: "in_progress", Confidence: 1.0},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reasonFor(tc.task); got != tc.want {
+				t.Errorf("reasonFor = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAttentionCardShowsReason(t *testing.T) {
+	srv, s, wt := testServer(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	lost := store.Task{
+		ID:           "t-lost",
+		WorktreeID:   wt.ID,
+		ProjectID:    wt.ProjectID,
+		CurrentTitle: "Disappeared task",
+		Status:       "lost",
+		Confidence:   1.0,
+		SourceFile:   "plan.md",
+		FirstSeenAt:  now,
+		LastSeenAt:   now,
+	}
+	renamed := store.Task{
+		ID:           "t-renamed",
+		WorktreeID:   wt.ID,
+		ProjectID:    wt.ProjectID,
+		CurrentTitle: "New title",
+		Aliases:      []string{"Old title"},
+		Status:       "in_progress",
+		Confidence:   0.55,
+		SourceFile:   "plan.md",
+		FirstSeenAt:  now,
+		LastSeenAt:   now,
+	}
+	if err := s.UpsertTask(ctx, lost); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertTask(ctx, renamed); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		`class="card-reason"`,
+		"missing from recent plan updates",
+		`renamed from &#34;Old title&#34; @ 0.55`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("kanban body missing %q", want)
+		}
+	}
+
+	// Task detail page must surface the same reason near the meta grid so the
+	// override form has context one scroll away.
+	rDetail := httptest.NewRequest("GET", "/task/"+renamed.ID, nil)
+	recDetail := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(recDetail, rDetail)
+	if recDetail.Code != 200 {
+		t.Fatalf("task detail status=%d", recDetail.Code)
+	}
+	detailBody := recDetail.Body.String()
+	for _, want := range []string{
+		`class="task-reason"`,
+		`renamed from &#34;Old title&#34; @ 0.55`,
+	} {
+		if !strings.Contains(detailBody, want) {
+			t.Errorf("task detail body missing %q", want)
+		}
+	}
+}
+
 func TestBucketizeClassification(t *testing.T) {
 	now := time.Now()
 	cards := []card{

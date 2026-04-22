@@ -90,6 +90,7 @@
     <span class="age">{{humanAge .Task.LastSeenAt}}</span>
   </div>
   {{if .Task.Phase}}<div class="card-phase">{{.Task.Phase}}</div>{{end}}
+  {{if .Reason}}<div class="card-reason" title="Why this card is in Needs Attention">{{.Reason}}</div>{{end}}
   <div class="card-badges">
     <span class="badge badge-{{statusBadge .Task.Status}}">{{.Task.Status}}</span>
     {{range .Badges}}<span class="badge badge-{{.}}">{{.}}</span>{{end}}

@@ -225,6 +225,10 @@ type card struct {
 	PlanBasename string
 	PlanID       string
 	Badges       []string
+	// Reason is a one-line human explanation of why the card lands in the
+	// Needs Attention column (lost / low-confidence rename / split / merge).
+	// Empty for cards that aren't in that column.
+	Reason string
 }
 
 func (s *Server) handleKanban(w http.ResponseWriter, r *http.Request) {
@@ -366,6 +370,7 @@ func (s *Server) buildCards(ctx context.Context, includeArchived bool, projectID
 			if t.Status == "lost" {
 				c.Badges = append(c.Badges, "lost")
 			}
+			c.Reason = reasonFor(t)
 			out = append(out, c)
 		}
 	}
@@ -465,6 +470,32 @@ func bucketize(cards []card, now time.Time) []column {
 	return cols
 }
 
+// reasonFor returns the one-line "why is this card in Needs Attention?" string.
+// Returns "" for healthy tasks. The reason is derived purely from task fields:
+// the lineage event in ingest also writes these onto the task row (aliases for
+// rename, SplitFrom/MergedFrom arrays, status=="lost") so no event lookup is
+// needed at render time.
+func reasonFor(t store.Task) string {
+	if t.Status == "lost" {
+		return "missing from recent plan updates"
+	}
+	if !(t.Confidence > 0 && t.Confidence < 0.7) {
+		return ""
+	}
+	conf := fmt.Sprintf("%.2f", t.Confidence)
+	switch {
+	case len(t.MergedFrom) > 0:
+		return fmt.Sprintf("merged from %d earlier tasks @ %s", len(t.MergedFrom), conf)
+	case len(t.SplitFrom) > 0:
+		return fmt.Sprintf("split from earlier task @ %s", conf)
+	case len(t.Aliases) > 0:
+		prev := t.Aliases[len(t.Aliases)-1]
+		return fmt.Sprintf("renamed from %q @ %s", prev, conf)
+	default:
+		return fmt.Sprintf("low confidence @ %s", conf)
+	}
+}
+
 func classify(c card, now time.Time) string {
 	t := c.Task
 	if t.Status == "done" || t.Status == "skipped" {
@@ -492,6 +523,10 @@ type taskData struct {
 	Overrides []store.Override
 	Lineage   lineagePanel
 	Revisions []taskHistoryRow
+	// Reason mirrors card.Reason — the one-line "why is this task in Needs
+	// Attention?" string, rendered next to confidence on the detail page so
+	// the override form is one scroll away from the context that motivates it.
+	Reason string
 }
 
 // taskHistoryRow decorates a TaskRevision with the href to its snapshot board
@@ -601,6 +636,7 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 			Parents: parents, Children: children, Renamed: t.RenamedFrom,
 		},
 		Revisions: history,
+		Reason:    reasonFor(*t),
 	})
 }
 
@@ -1101,6 +1137,7 @@ func (s *Server) handleSnapshotBoard(w http.ResponseWriter, r *http.Request) {
 		if t.Status == "lost" {
 			c.Badges = append(c.Badges, "lost")
 		}
+		c.Reason = reasonFor(t)
 		cards = append(cards, c)
 	}
 

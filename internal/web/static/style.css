@@ -941,6 +941,16 @@ main {
   font-size: 12px;
 }
 
+.card-reason {
+  margin: 0 0 8px;
+  padding: 4px 7px;
+  border-left: 2px solid var(--accent-border);
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .card-badges {
   display: flex;
   flex-wrap: wrap;
@@ -1017,6 +1027,15 @@ main {
 .task-detail h1,
 .source-view h1 {
   margin-bottom: 18px;
+}
+
+.task-reason {
+  margin: -10px 0 18px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent-border);
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font-size: 13px;
 }
 
 .archive h2,

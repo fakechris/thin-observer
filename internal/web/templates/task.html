@@ -2,6 +2,7 @@
 <section class="task-detail">
   <a class="back" href="/">← back to board</a>
   <h1>{{.Task.CurrentTitle}}</h1>
+  {{if .Reason}}<p class="task-reason" title="Why this task is in Needs Attention">{{.Reason}}</p>{{end}}
   <div class="meta-grid">
     <div><dt>id</dt><dd><code>{{.Task.ID}}</code></dd></div>
     <div><dt>status</dt><dd><span class="badge badge-{{statusBadge .Task.Status}}">{{.Task.Status}}</span></dd></div>
