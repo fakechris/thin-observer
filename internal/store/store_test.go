@@ -137,6 +137,62 @@ func TestPlanDocRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMarkPlanDocsMissingAndResurrection(t *testing.T) {
+	// Two plan_docs; one is present on disk, one vanished. After a sweep with
+	// only the present file, the vanished row must get missing_since set and
+	// the present row must stay clear. On the next sweep that lists both
+	// files again, the previously-missing row must be cleared (resurrection).
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	_ = s.UpsertProject(ctx, Project{ID: "p1", Name: "demo", RootPath: "/tmp/demo"})
+	_ = s.UpsertWorktree(ctx, Worktree{ID: "w1", ProjectID: "p1", Name: "main", Path: "/tmp/demo/main"})
+	now := time.Now().UTC()
+	_ = s.UpsertPlanDoc(ctx, PlanDoc{
+		ID: "pd1", WorktreeID: "w1", SourceFile: "/tmp/demo/main/task_plan.md",
+		Title: "Roadmap", Kind: "task_plan", LastSeenAt: now,
+	})
+	_ = s.UpsertPlanDoc(ctx, PlanDoc{
+		ID: "pd2", WorktreeID: "w1", SourceFile: "/tmp/demo/main/docs/plans/phase27.md",
+		Title: "Phase 27", Kind: "detailed_plan", LastSeenAt: now,
+	})
+
+	// Sweep 1: only pd1's file is present on disk. pd2 should go missing.
+	at1 := now.Add(time.Minute)
+	if err := s.MarkPlanDocsMissing(ctx, "w1", []string{"/tmp/demo/main/task_plan.md"}, at1); err != nil {
+		t.Fatal(err)
+	}
+	pd1, _ := s.PlanDocByWorktreeAndFile(ctx, "w1", "/tmp/demo/main/task_plan.md")
+	pd2, _ := s.PlanDocByWorktreeAndFile(ctx, "w1", "/tmp/demo/main/docs/plans/phase27.md")
+	if pd1.MissingSince != nil {
+		t.Errorf("pd1 (present file) wrongly flagged missing: %v", *pd1.MissingSince)
+	}
+	if pd2.MissingSince == nil {
+		t.Fatal("pd2 (absent file) not flagged missing")
+	}
+	if !pd2.MissingSince.Equal(at1) {
+		t.Errorf("pd2 missing_since = %v, want %v", *pd2.MissingSince, at1)
+	}
+
+	// Sweep 2: pd2's file returns. Flag should be cleared.
+	at2 := at1.Add(time.Minute)
+	if err := s.MarkPlanDocsMissing(ctx, "w1", []string{
+		"/tmp/demo/main/task_plan.md",
+		"/tmp/demo/main/docs/plans/phase27.md",
+	}, at2); err != nil {
+		t.Fatal(err)
+	}
+	pd2, _ = s.PlanDocByWorktreeAndFile(ctx, "w1", "/tmp/demo/main/docs/plans/phase27.md")
+	if pd2.MissingSince != nil {
+		t.Errorf("pd2 still flagged missing after resurrection: %v", *pd2.MissingSince)
+	}
+}
+
 func TestPlanLinksReplaceAndResolve(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(filepath.Join(dir, "db.sqlite"))

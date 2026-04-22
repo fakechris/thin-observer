@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS plan_doc (
     kind             TEXT NOT NULL,
     last_snapshot_id TEXT REFERENCES snapshot(id),
     last_seen_at     TEXT NOT NULL,
+    missing_since    TEXT,
     UNIQUE(worktree_id, source_file)
 );
 

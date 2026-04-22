@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -74,6 +75,10 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		// event.snapshot_id added in the multi-plan view / time-machine PR to
 		// replace the fragile (worktree_id, timestamp) event-to-snapshot match.
 		{"event", "snapshot_id", `ALTER TABLE event ADD COLUMN snapshot_id TEXT REFERENCES snapshot(id)`},
+		// plan_doc.missing_since flags files that vanished from disk on the
+		// last sweep. NULL = present. We keep the row so historical tasks
+		// sourced from it stay queryable.
+		{"plan_doc", "missing_since", `ALTER TABLE plan_doc ADD COLUMN missing_since TEXT`},
 	}
 	for _, s := range steps {
 		table, err := tableExists(ctx, db, s.table)
@@ -639,36 +644,90 @@ func (s *Store) UpsertPlanDoc(ctx context.Context, p PlanDoc) error {
 	if p.LastSeenAt.IsZero() {
 		p.LastSeenAt = time.Now().UTC()
 	}
+	// An upsert means the file was just observed — any stale missing_since
+	// flag must be cleared.
 	_, err := s.exec.ExecContext(ctx, `
-		INSERT INTO plan_doc (id, worktree_id, source_file, title, kind, last_snapshot_id, last_seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO plan_doc (id, worktree_id, source_file, title, kind, last_snapshot_id, last_seen_at, missing_since)
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
 		ON CONFLICT(worktree_id, source_file) DO UPDATE SET
 			title            = excluded.title,
 			kind             = excluded.kind,
 			last_snapshot_id = excluded.last_snapshot_id,
-			last_seen_at     = excluded.last_seen_at
+			last_seen_at     = excluded.last_seen_at,
+			missing_since    = NULL
 	`, p.ID, p.WorktreeID, p.SourceFile, p.Title, p.Kind,
 		nilIfEmpty(p.LastSnapshotID), p.LastSeenAt.Format(time.RFC3339Nano))
 	return err
 }
 
+// MarkPlanDocsMissing reconciles plan_doc rows for a worktree against the set
+// of plan files currently on disk. Rows whose source_file is not in
+// presentFiles get missing_since set to `at` (if not already set). Rows whose
+// file is present get missing_since cleared. The row itself is never deleted
+// so downstream tasks retain a stable plan_id.
+func (s *Store) MarkPlanDocsMissing(ctx context.Context, worktreeID string, presentFiles []string, at time.Time) error {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	// Build a placeholder list for NOT IN(...). Empty slice means "everything
+	// is missing", which is a legitimate (if alarming) outcome.
+	if len(presentFiles) == 0 {
+		_, err := s.exec.ExecContext(ctx, `
+			UPDATE plan_doc
+			SET missing_since = ?
+			WHERE worktree_id = ? AND missing_since IS NULL
+		`, at.Format(time.RFC3339Nano), worktreeID)
+		return err
+	}
+	args := make([]any, 0, len(presentFiles)+3)
+	args = append(args, at.Format(time.RFC3339Nano), worktreeID)
+	placeholders := make([]string, len(presentFiles))
+	for i, f := range presentFiles {
+		placeholders[i] = "?"
+		args = append(args, f)
+	}
+	missQuery := `
+		UPDATE plan_doc
+		SET missing_since = ?
+		WHERE worktree_id = ? AND missing_since IS NULL
+		  AND source_file NOT IN (` + strings.Join(placeholders, ",") + `)`
+	if _, err := s.exec.ExecContext(ctx, missQuery, args...); err != nil {
+		return fmt.Errorf("flag missing: %w", err)
+	}
+	// Clear missing_since for any file that's now present again.
+	clearArgs := make([]any, 0, len(presentFiles)+1)
+	clearArgs = append(clearArgs, worktreeID)
+	for _, f := range presentFiles {
+		clearArgs = append(clearArgs, f)
+	}
+	clearQuery := `
+		UPDATE plan_doc
+		SET missing_since = NULL
+		WHERE worktree_id = ? AND missing_since IS NOT NULL
+		  AND source_file IN (` + strings.Join(placeholders, ",") + `)`
+	if _, err := s.exec.ExecContext(ctx, clearQuery, clearArgs...); err != nil {
+		return fmt.Errorf("clear missing: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) PlanDocByWorktreeAndFile(ctx context.Context, worktreeID, sourceFile string) (*PlanDoc, error) {
 	row := s.exec.QueryRowContext(ctx, `
-		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at
+		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at, missing_since
 		FROM plan_doc WHERE worktree_id = ? AND source_file = ?`, worktreeID, sourceFile)
 	return scanPlanDoc(row)
 }
 
 func (s *Store) PlanDocByID(ctx context.Context, id string) (*PlanDoc, error) {
 	row := s.exec.QueryRowContext(ctx, `
-		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at
+		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at, missing_since
 		FROM plan_doc WHERE id = ?`, id)
 	return scanPlanDoc(row)
 }
 
 func (s *Store) PlanDocsByWorktree(ctx context.Context, worktreeID string) ([]PlanDoc, error) {
 	rows, err := s.exec.QueryContext(ctx, `
-		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at
+		SELECT id, worktree_id, source_file, title, kind, COALESCE(last_snapshot_id, ''), last_seen_at, missing_since
 		FROM plan_doc WHERE worktree_id = ? ORDER BY source_file`, worktreeID)
 	if err != nil {
 		return nil, err
@@ -688,10 +747,16 @@ func (s *Store) PlanDocsByWorktree(ctx context.Context, worktreeID string) ([]Pl
 func scanPlanDoc(r scanner) (*PlanDoc, error) {
 	var p PlanDoc
 	var seen string
-	if err := r.Scan(&p.ID, &p.WorktreeID, &p.SourceFile, &p.Title, &p.Kind, &p.LastSnapshotID, &seen); err != nil {
+	var missing sql.NullString
+	if err := r.Scan(&p.ID, &p.WorktreeID, &p.SourceFile, &p.Title, &p.Kind, &p.LastSnapshotID, &seen, &missing); err != nil {
 		return nil, err
 	}
 	p.LastSeenAt, _ = time.Parse(time.RFC3339Nano, seen)
+	if missing.Valid && missing.String != "" {
+		if t, err := time.Parse(time.RFC3339Nano, missing.String); err == nil {
+			p.MissingSince = &t
+		}
+	}
 	return &p, nil
 }
 

@@ -202,6 +202,78 @@ func TestKanbanShowsPlanSwitcherAndFiltersByPlan(t *testing.T) {
 	}
 }
 
+func TestPlanDrawerMarksMissingPlanFiles(t *testing.T) {
+	// Once a plan_doc has its missing_since set (simulating a sweep that
+	// didn't find the file on disk), both the plan drawer on the board and
+	// the plan detail page should show a visible "missing" marker.
+	dir := t.TempDir()
+	s, err := store.Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+
+	root := t.TempDir()
+	_ = s.UpsertProject(ctx, store.Project{ID: "p1", Name: "demo", RootPath: root})
+	w := store.Worktree{ID: "w1", ProjectID: "p1", Name: "feature", Path: root}
+	_ = s.UpsertWorktree(ctx, w)
+	_ = os.MkdirAll(filepath.Join(root, "docs/plans"), 0o755)
+	taskPlan := filepath.Join(root, "task_plan.md")
+	phasePlan := filepath.Join(root, "docs/plans/phase27.md")
+	_ = os.WriteFile(taskPlan, []byte("## TODO\n- [ ] Root task\n"), 0o644)
+	_ = os.WriteFile(phasePlan, []byte("## Phase\n- [ ] Phase task\n"), 0o644)
+	in := ingest.New(s)
+	d1, _ := parser.ParseFile(taskPlan)
+	_, _ = in.Apply(ctx, w, d1)
+	d2, _ := parser.ParseFile(phasePlan)
+	_, _ = in.Apply(ctx, w, d2)
+
+	// Delete phase plan from disk, run a sweep against the surviving file only.
+	_ = os.Remove(phasePlan)
+	if err := s.MarkPlanDocsMissing(ctx, w.ID, []string{taskPlan}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := New(s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Board: drawer should render a missing marker on the phase pill.
+	r := httptest.NewRequest("GET", "/?project=p1", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("board status=%d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "plan-pill-missing") {
+		t.Errorf("board missing plan-pill-missing class")
+	}
+
+	// Plan detail: flag visible too.
+	docs, _ := s.PlanDocsByWorktree(ctx, w.ID)
+	var phaseID string
+	for _, d := range docs {
+		if d.SourceFile == phasePlan {
+			phaseID = d.ID
+		}
+	}
+	if phaseID == "" {
+		t.Fatal("phase plan_doc not found")
+	}
+	r2 := httptest.NewRequest("GET", "/plan/"+phaseID, nil)
+	rec2 := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec2, r2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("plan detail status=%d", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), "missing since") {
+		t.Errorf("plan detail missing 'missing since' flag")
+	}
+}
+
 func TestKanbanUnknownPlanReturnsNotFound(t *testing.T) {
 	srv, _, _ := testServer(t)
 	r := httptest.NewRequest("GET", "/?plan=doesnotexist", nil)

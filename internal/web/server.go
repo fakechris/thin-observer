@@ -209,6 +209,7 @@ type planOption struct {
 	ProjectID    string
 	Selected     bool
 	HREF         string
+	Missing      bool // file was not on disk during the last sweep
 }
 
 type column struct {
@@ -418,6 +419,7 @@ func (s *Server) planOptions(ctx context.Context, projectID, selectedPlanID stri
 				ProjectID:    wt.ProjectID,
 				Selected:     d.ID == selectedPlanID,
 				HREF:         "/?" + q.Encode(),
+				Missing:      d.MissingSince != nil,
 			})
 		}
 	}

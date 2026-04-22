@@ -255,7 +255,8 @@ func registerAll(
 		}
 
 		// Initial ingestion: scan for known plan files and parse them.
-		for _, plan := range watcher.ListKnownPlanFiles(f.WorktreePath) {
+		plans := watcher.ListKnownPlanFiles(f.WorktreePath)
+		for _, plan := range plans {
 			doc, err := parser.ParseFile(plan)
 			if err != nil {
 				logger.Warn("parse_initial", "file", plan, "err", err)
@@ -272,6 +273,12 @@ func registerAll(
 					"wt", f.WorktreeName,
 					"created", res.Created, "updated", res.Updated)
 			}
+		}
+		// Reconcile: any plan_doc whose source file is not currently on disk
+		// gets flagged missing. Row stays — historical tasks still reference
+		// it — but the UI will dim it so the user sees the file vanished.
+		if err := s.MarkPlanDocsMissing(ctx, stored.ID, plans, time.Now().UTC()); err != nil {
+			logger.Warn("reconcile_plans", "wt", f.WorktreeName, "err", err)
 		}
 	}
 	return out, nil
