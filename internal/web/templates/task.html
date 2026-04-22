@@ -7,7 +7,7 @@
     <div><dt>status</dt><dd><span class="badge badge-{{statusBadge .Task.Status}}">{{.Task.Status}}</span></dd></div>
     <div><dt>phase</dt><dd>{{if .Task.Phase}}{{.Task.Phase}}{{else}}—{{end}}</dd></div>
     <div><dt>confidence</dt><dd>{{printf "%.2f" .Task.Confidence}}</dd></div>
-    <div><dt>worktree</dt><dd>{{if .Worktree}}{{.Worktree.Name}}<br><code>{{.Worktree.Path}}</code>{{else}}—{{end}}</dd></div>
+    <div><dt>worktree</dt><dd>{{if .Worktree}}{{.Worktree.Name}} <a class="timeline-link" href="/worktree/{{.Worktree.ID}}/timeline" title="Time Machine for {{.Worktree.Name}}">time machine →</a><br><code>{{.Worktree.Path}}</code>{{else}}—{{end}}</dd></div>
     <div><dt>source</dt><dd>{{if .Task.SourceFile}}<a class="source-link" href="/task/{{.Task.ID}}/source#L{{.Task.SourceLine}}"><code>{{.Task.SourceFile}}:{{.Task.SourceLine}}</code></a>{{else}}—{{end}}</dd></div>
     <div><dt>first seen</dt><dd>{{.Task.FirstSeenAt.Format "2006-01-02 15:04"}}</dd></div>
     <div><dt>last seen</dt><dd>{{.Task.LastSeenAt.Format "2006-01-02 15:04"}} ({{humanAge .Task.LastSeenAt}})</dd></div>

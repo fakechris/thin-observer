@@ -55,10 +55,14 @@ func TestKanbanRenders(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"Inbox", "Active", "Done", "thin-observer", "feature", "/worktree/w1/timeline", "Time Machine"} {
+	for _, want := range []string{"Inbox", "Active", "Done", "thin-observer", "feature"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("kanban missing %q", want)
 		}
+	}
+	// Per-card Time Machine link was noisy; it lives on task/plan detail now.
+	if strings.Contains(body, "/worktree/w1/timeline") {
+		t.Errorf("kanban should not render per-card timeline links")
 	}
 }
 
@@ -264,9 +268,10 @@ func TestPlanDetailPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"Phase 27 Closeout", // linked plan title
-		"task_plan.md",      // basename
-		"/plan/" + phaseID,  // resolved link target
+		"Phase 27 Closeout",           // linked plan title
+		"task_plan.md",                // basename
+		"/plan/" + phaseID,            // resolved link target
+		"/worktree/" + w.ID + "/timeline", // time machine entry point
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("root plan page missing %q", want)
@@ -542,6 +547,9 @@ func TestTaskPageAndOverride(t *testing.T) {
 	}
 	if !strings.Contains(body, "/task/"+taskID+"/source") {
 		t.Errorf("task page missing source context link")
+	}
+	if !strings.Contains(body, "/worktree/"+w.ID+"/timeline") {
+		t.Errorf("task page missing time machine link for its worktree")
 	}
 
 	// POST an override; expect redirect back to /task/<id>.

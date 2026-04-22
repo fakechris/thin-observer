@@ -88,7 +88,6 @@
     <span class="wt">{{.Worktree.Name}}</span>
     {{if .ProjectName}}<span class="proj">{{.ProjectName}}</span>{{end}}
     <span class="age">{{humanAge .Task.LastSeenAt}}</span>
-    <a class="history-link" href="/worktree/{{.Worktree.ID}}/timeline" title="Time Machine for {{.Worktree.Name}}">Time Machine</a>
   </div>
   {{if .Task.Phase}}<div class="card-phase">{{.Task.Phase}}</div>{{end}}
   <div class="card-badges">
