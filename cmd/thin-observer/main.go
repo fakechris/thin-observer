@@ -147,9 +147,10 @@ func watchCmd() *cobra.Command {
 			}
 
 			// Auto-archive any worktree in the DB whose path no longer exists.
-			// Runs after registerAll so a newly-re-registered worktree is
-			// considered active again (UpsertWorktree flips status back to
-			// active unless already archived — see store.UpsertWorktree).
+			// Must run after registerAll: that's where rediscovered paths get
+			// explicitly un-archived (UpsertWorktree alone won't flip status
+			// back — see its ON CONFLICT clause). Running this first would
+			// re-archive a row registerAll is about to revive.
 			if err := archiveVanishedWorktrees(ctx, s, logger); err != nil {
 				logger.Warn("archive_vanished_failed", "err", err)
 			}
@@ -300,6 +301,22 @@ func registerAll(
 		stored, err := s.WorktreeByPath(ctx, f.WorktreePath)
 		if err != nil {
 			return nil, err
+		}
+		// Discovery just found this path on disk, yet UpsertWorktree's
+		// ON CONFLICT clause refuses to un-archive (so a stray ingest
+		// can't silently resurrect it). If it's archived, the user
+		// explicitly recreated the worktree at this path — restore it.
+		// Without this, archiveVanishedWorktrees + re-creation would
+		// leave the row stuck archived forever.
+		if stored.Status == "archived" {
+			if err := s.UnarchiveWorktree(ctx, stored.ID); err != nil {
+				return nil, fmt.Errorf("unarchive worktree %s: %w", f.WorktreePath, err)
+			}
+			stored, err = s.WorktreeByPath(ctx, f.WorktreePath)
+			if err != nil {
+				return nil, err
+			}
+			logger.Info("worktree_unarchived", "wt", stored.Name, "reason", "path_recreated")
 		}
 		out[f.WorktreePath] = stored
 

@@ -506,3 +506,49 @@ func TestArchiveWorktree(t *testing.T) {
 		t.Fatalf("all = %d, want 1", len(all))
 	}
 }
+
+// TestUnarchiveWorktreeRestoresActive covers the path where a user removes
+// then recreates a worktree at the same location. UpsertWorktree deliberately
+// refuses to un-archive (see its ON CONFLICT clause), so this explicit helper
+// is the only way registerAll can restore the row without losing the ID /
+// task history attached to it.
+func TestUnarchiveWorktreeRestoresActive(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	if err := s.UpsertProject(ctx, Project{ID: "p1", Name: "demo", RootPath: "/tmp/demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertWorktree(ctx, Worktree{ID: "w1", ProjectID: "p1", Name: "revived", Path: "/tmp/revived"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ArchiveWorktree(ctx, "w1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UnarchiveWorktree(ctx, "w1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.WorktreeByID(ctx, "w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "active" {
+		t.Errorf("status=%q want active", got.Status)
+	}
+	if got.ArchivedAt != nil {
+		t.Errorf("archived_at=%v want nil", got.ArchivedAt)
+	}
+	// A subsequent UpsertWorktree with Status=active must not re-archive it.
+	if err := s.UpsertWorktree(ctx, Worktree{ID: "w1", ProjectID: "p1", Name: "revived", Path: "/tmp/revived", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := s.WorktreeByID(ctx, "w1")
+	if got2.Status != "active" {
+		t.Errorf("after upsert status=%q want active", got2.Status)
+	}
+}
