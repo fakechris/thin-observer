@@ -340,9 +340,9 @@ func TestPlanDetailPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"Phase 27 Closeout",           // linked plan title
-		"task_plan.md",                // basename
-		"/plan/" + phaseID,            // resolved link target
+		"Phase 27 Closeout",               // linked plan title
+		"task_plan.md",                    // basename
+		"/plan/" + phaseID,                // resolved link target
 		"/worktree/" + w.ID + "/timeline", // time machine entry point
 	} {
 		if !strings.Contains(body, want) {
@@ -844,6 +844,87 @@ func TestArchivePage(t *testing.T) {
 	}
 }
 
+func TestArchivePageSurfacesArchivedWorktreeTasks(t *testing.T) {
+	srv, s, _ := testServer(t)
+	ctx := context.Background()
+
+	// Second worktree that we'll archive; seed a task on it that isn't
+	// dropped or lost — exactly the case that used to be invisible.
+	gone := store.Worktree{
+		ID: "w-gone", ProjectID: "p1", Name: "retired-feature", Path: "/tmp/retired",
+	}
+	if err := s.UpsertWorktree(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	stranded := store.Task{
+		ID:           "t-stranded",
+		WorktreeID:   gone.ID,
+		ProjectID:    gone.ProjectID,
+		CurrentTitle: "Stranded in-progress task",
+		Status:       "in_progress",
+		Confidence:   1.0,
+		FirstSeenAt:  now, LastSeenAt: now,
+	}
+	if err := s.UpsertTask(ctx, stranded); err != nil {
+		t.Fatal(err)
+	}
+	// A dropped task on the archived worktree must appear ONLY inside its
+	// worktree group, not also under the global Dropped section — that's
+	// the "every task appears exactly once" invariant.
+	droppedOnArchived := store.Task{
+		ID:           "t-dropped-on-archived",
+		WorktreeID:   gone.ID,
+		ProjectID:    gone.ProjectID,
+		CurrentTitle: "Dropped on archived worktree",
+		Status:       "dropped",
+		Confidence:   1.0,
+		FirstSeenAt:  now, LastSeenAt: now,
+	}
+	if err := s.UpsertTask(ctx, droppedOnArchived); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ArchiveWorktree(ctx, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest("GET", "/archive", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != 200 {
+		t.Fatalf("archive status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"retired-feature",
+		"Stranded in-progress task",
+		`href="/task/t-stranded"`,
+		`/worktree/w-gone/timeline`,
+		"Dropped on archived worktree",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("archive page missing %q", want)
+		}
+	}
+	// Invariant check: the dropped-on-archived task title appears exactly
+	// once — inside the archived group — and not duplicated into the
+	// global Dropped section above it.
+	if n := strings.Count(body, "Dropped on archived worktree"); n != 1 {
+		t.Errorf("dropped-on-archived task appeared %d times; want 1 (should be in archived group only, not also under global Dropped)", n)
+	}
+	// Position check: if the title does appear, it must be after the
+	// "Archived worktrees" heading, not in the global Dropped section.
+	droppedHeadIdx := strings.Index(body, "<h2>Dropped tasks</h2>")
+	archivedHeadIdx := strings.Index(body, "<h2>Archived worktrees</h2>")
+	titleIdx := strings.Index(body, "Dropped on archived worktree")
+	if droppedHeadIdx < 0 || archivedHeadIdx < 0 || titleIdx < 0 {
+		t.Fatalf("archive page missing expected headings or task title")
+	}
+	if titleIdx < archivedHeadIdx {
+		t.Errorf("dropped-on-archived task rendered before 'Archived worktrees' heading — likely inside global Dropped section")
+	}
+}
+
 func TestStaticCSSServed(t *testing.T) {
 	srv, _, _ := testServer(t)
 	r := httptest.NewRequest("GET", "/static/style.css", nil)
@@ -874,6 +955,148 @@ func TestFaviconDoesNotPolluteConsole(t *testing.T) {
 	srv.Routes().ServeHTTP(rec, r)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("favicon status=%d want 204", rec.Code)
+	}
+}
+
+func TestReasonFor(t *testing.T) {
+	cases := []struct {
+		name string
+		task store.Task
+		want string
+	}{
+		{
+			name: "lost task",
+			task: store.Task{Status: "lost", Confidence: 1.0},
+			want: "missing from recent plan updates",
+		},
+		{
+			name: "low-confidence rename carries previous title",
+			task: store.Task{
+				Status:       "in_progress",
+				Confidence:   0.62,
+				CurrentTitle: "Ship feature X",
+				Aliases:      []string{"Prototype feature X"},
+			},
+			want: `renamed from "Prototype feature X" @ 0.62`,
+		},
+		{
+			name: "low-confidence split child",
+			task: store.Task{Status: "pending", Confidence: 0.55, SplitFrom: []string{"parent-1"}},
+			want: "split from earlier task @ 0.55",
+		},
+		{
+			name: "low-confidence merge child",
+			task: store.Task{
+				Status:     "pending",
+				Confidence: 0.5,
+				MergedFrom: []string{"a", "b", "c"},
+			},
+			want: "merged from 3 earlier tasks @ 0.50",
+		},
+		{
+			name: "low-confidence fallback",
+			task: store.Task{Status: "pending", Confidence: 0.3},
+			want: "low confidence @ 0.30",
+		},
+		{
+			name: "healthy task has no reason",
+			task: store.Task{Status: "in_progress", Confidence: 1.0},
+			want: "",
+		},
+		{
+			// classify() routes done/skipped into the Done column before
+			// checking confidence. reasonFor must mirror that precedence,
+			// otherwise a rename that lowered confidence below 0.7 in the
+			// same snapshot it completed would render an attention reason
+			// inside a Done card — violating the card.Reason invariant.
+			name: "done with low confidence suppresses reason",
+			task: store.Task{Status: "done", Confidence: 0.65, Aliases: []string{"old"}},
+			want: "",
+		},
+		{
+			name: "skipped with low confidence suppresses reason",
+			task: store.Task{Status: "skipped", Confidence: 0.4},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reasonFor(tc.task); got != tc.want {
+				t.Errorf("reasonFor = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAttentionCardShowsReason(t *testing.T) {
+	srv, s, wt := testServer(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	lost := store.Task{
+		ID:           "t-lost",
+		WorktreeID:   wt.ID,
+		ProjectID:    wt.ProjectID,
+		CurrentTitle: "Disappeared task",
+		Status:       "lost",
+		Confidence:   1.0,
+		SourceFile:   "plan.md",
+		FirstSeenAt:  now,
+		LastSeenAt:   now,
+	}
+	renamed := store.Task{
+		ID:           "t-renamed",
+		WorktreeID:   wt.ID,
+		ProjectID:    wt.ProjectID,
+		CurrentTitle: "New title",
+		Aliases:      []string{"Old title"},
+		Status:       "in_progress",
+		Confidence:   0.55,
+		SourceFile:   "plan.md",
+		FirstSeenAt:  now,
+		LastSeenAt:   now,
+	}
+	if err := s.UpsertTask(ctx, lost); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertTask(ctx, renamed); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		`class="card-reason"`,
+		"missing from recent plan updates",
+		`renamed from &#34;Old title&#34; @ 0.55`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("kanban body missing %q", want)
+		}
+	}
+
+	// Task detail page must surface the same reason near the meta grid so the
+	// override form has context one scroll away.
+	rDetail := httptest.NewRequest("GET", "/task/"+renamed.ID, nil)
+	recDetail := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(recDetail, rDetail)
+	if recDetail.Code != 200 {
+		t.Fatalf("task detail status=%d", recDetail.Code)
+	}
+	detailBody := recDetail.Body.String()
+	for _, want := range []string{
+		`class="task-reason"`,
+		`renamed from &#34;Old title&#34; @ 0.55`,
+	} {
+		if !strings.Contains(detailBody, want) {
+			t.Errorf("task detail body missing %q", want)
+		}
 	}
 }
 

@@ -283,6 +283,18 @@ func (s *Store) ArchiveWorktree(ctx context.Context, id string) error {
 	return err
 }
 
+// UnarchiveWorktree flips an archived worktree back to active and clears
+// archived_at. Needed because UpsertWorktree intentionally refuses to
+// un-archive on conflict (so a stray ingest can't silently resurrect an
+// archived row), but when registerAll rediscovers a live path that was
+// previously auto-archived, we must explicitly restore it.
+func (s *Store) UnarchiveWorktree(ctx context.Context, id string) error {
+	_, err := s.exec.ExecContext(ctx, `
+		UPDATE worktree SET status = 'active', archived_at = NULL WHERE id = ?`,
+		id)
+	return err
+}
+
 // ---- Snapshot ----
 
 func (s *Store) InsertSnapshot(ctx context.Context, snap Snapshot) error {

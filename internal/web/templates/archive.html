@@ -16,16 +16,30 @@
   </div>
 
   <h2>Archived worktrees</h2>
-  <ul class="archived-wts">
+  <p class="help">Worktrees whose directory vanished from disk. Their tasks are preserved here so the history stays queryable.</p>
+  {{if .ArchivedWorktrees}}
+  <div class="archived-wt-groups">
     {{range .ArchivedWorktrees}}
-    <li>
-      <strong>{{.Name}}</strong>
-      <code>{{.Path}}</code>
-      {{if .ArchivedAt}}<span class="age">archived {{humanAge .ArchivedAt.Local}}</span>{{end}}
-    </li>
-    {{else}}
-    <li class="empty">—</li>
+    <section class="archived-wt-group">
+      <header class="archived-wt-head">
+        <strong>{{.Worktree.Name}}</strong>
+        <code>{{.Worktree.Path}}</code>
+        {{if .Worktree.ArchivedAt}}<span class="age">archived {{humanAge .Worktree.ArchivedAt.Local}}</span>{{end}}
+        <a class="timeline-link" href="{{.TimelineURL}}">time machine →</a>
+        <span class="count">{{len .Cards}} task{{if ne (len .Cards) 1}}s{{end}}</span>
+      </header>
+      {{if .Cards}}
+      <div class="card-list">
+        {{range .Cards}}{{template "card" .}}{{end}}
+      </div>
+      {{else}}
+      <p class="empty">no tasks recorded on this worktree</p>
+      {{end}}
+    </section>
     {{end}}
-  </ul>
+  </div>
+  {{else}}
+  <p class="empty">—</p>
+  {{end}}
 </section>
 {{end}}

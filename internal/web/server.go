@@ -225,6 +225,10 @@ type card struct {
 	PlanBasename string
 	PlanID       string
 	Badges       []string
+	// Reason is a one-line human explanation of why the card lands in the
+	// Needs Attention column (lost / low-confidence rename / split / merge).
+	// Empty for cards that aren't in that column.
+	Reason string
 }
 
 func (s *Server) handleKanban(w http.ResponseWriter, r *http.Request) {
@@ -366,6 +370,7 @@ func (s *Server) buildCards(ctx context.Context, includeArchived bool, projectID
 			if t.Status == "lost" {
 				c.Badges = append(c.Badges, "lost")
 			}
+			c.Reason = reasonFor(t)
 			out = append(out, c)
 		}
 	}
@@ -465,6 +470,38 @@ func bucketize(cards []card, now time.Time) []column {
 	return cols
 }
 
+// reasonFor returns the one-line "why is this card in Needs Attention?" string.
+// Returns "" for healthy tasks. The reason is derived purely from task fields:
+// the lineage event in ingest also writes these onto the task row (aliases for
+// rename, SplitFrom/MergedFrom arrays, status=="lost") so no event lookup is
+// needed at render time.
+func reasonFor(t store.Task) string {
+	// done/skipped tasks classify into the Done column regardless of
+	// confidence (see classify), so they must not carry an attention-column
+	// reason even when confidence happens to be low.
+	if t.Status == "done" || t.Status == "skipped" {
+		return ""
+	}
+	if t.Status == "lost" {
+		return "missing from recent plan updates"
+	}
+	if !(t.Confidence > 0 && t.Confidence < 0.7) {
+		return ""
+	}
+	conf := fmt.Sprintf("%.2f", t.Confidence)
+	switch {
+	case len(t.MergedFrom) > 0:
+		return fmt.Sprintf("merged from %d earlier tasks @ %s", len(t.MergedFrom), conf)
+	case len(t.SplitFrom) > 0:
+		return fmt.Sprintf("split from earlier task @ %s", conf)
+	case len(t.Aliases) > 0:
+		prev := t.Aliases[len(t.Aliases)-1]
+		return fmt.Sprintf("renamed from %q @ %s", prev, conf)
+	default:
+		return fmt.Sprintf("low confidence @ %s", conf)
+	}
+}
+
 func classify(c card, now time.Time) string {
 	t := c.Task
 	if t.Status == "done" || t.Status == "skipped" {
@@ -492,6 +529,10 @@ type taskData struct {
 	Overrides []store.Override
 	Lineage   lineagePanel
 	Revisions []taskHistoryRow
+	// Reason mirrors card.Reason — the one-line "why is this task in Needs
+	// Attention?" string, rendered next to confidence on the detail page so
+	// the override form is one scroll away from the context that motivates it.
+	Reason string
 }
 
 // taskHistoryRow decorates a TaskRevision with the href to its snapshot board
@@ -601,6 +642,7 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 			Parents: parents, Children: children, Renamed: t.RenamedFrom,
 		},
 		Revisions: history,
+		Reason:    reasonFor(*t),
 	})
 }
 
@@ -1101,6 +1143,7 @@ func (s *Server) handleSnapshotBoard(w http.ResponseWriter, r *http.Request) {
 		if t.Status == "lost" {
 			c.Badges = append(c.Badges, "lost")
 		}
+		c.Reason = reasonFor(t)
 		cards = append(cards, c)
 	}
 
@@ -1122,8 +1165,18 @@ func (s *Server) handleSnapshotBoard(w http.ResponseWriter, r *http.Request) {
 
 // ---- Archive ----
 
+// archivedWorktreeGroup bundles an archived worktree with the tasks that lived
+// inside it. Without this grouping, any task that wasn't status=dropped|lost
+// at the time its worktree was archived becomes unreachable from the UI —
+// violating invariant #6 (worktree death ≠ task death).
+type archivedWorktreeGroup struct {
+	Worktree   store.Worktree
+	Cards      []card
+	TimelineURL string
+}
+
 type archiveData struct {
-	ArchivedWorktrees []store.Worktree
+	ArchivedWorktrees []archivedWorktreeGroup
 	DroppedTasks      []card
 	LostTasks         []card
 }
@@ -1135,19 +1188,38 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	data := archiveData{}
 	wts, _ := s.store.ListWorktrees(ctx, true)
+	// Group archived-worktree cards by worktree ID. A task belongs in one
+	// bucket only: if its worktree is archived it lands in that group; the
+	// global Dropped / Lost sections are for live worktrees, so every task
+	// appears exactly once.
+	archivedByID := map[string]*archivedWorktreeGroup{}
 	for _, wt := range wts {
-		if wt.Status == "archived" {
-			data.ArchivedWorktrees = append(data.ArchivedWorktrees, wt)
+		if wt.Status != "archived" {
+			continue
+		}
+		archivedByID[wt.ID] = &archivedWorktreeGroup{
+			Worktree:    wt,
+			TimelineURL: "/worktree/" + wt.ID + "/timeline",
 		}
 	}
+	data := archiveData{}
 	for _, c := range cards {
-		switch {
-		case c.Task.Status == "dropped":
+		if g, ok := archivedByID[c.Task.WorktreeID]; ok {
+			g.Cards = append(g.Cards, c)
+			continue
+		}
+		switch c.Task.Status {
+		case "dropped":
 			data.DroppedTasks = append(data.DroppedTasks, c)
-		case c.Task.Status == "lost":
+		case "lost":
 			data.LostTasks = append(data.LostTasks, c)
+		}
+	}
+	// Preserve ListWorktrees ordering.
+	for _, wt := range wts {
+		if g, ok := archivedByID[wt.ID]; ok {
+			data.ArchivedWorktrees = append(data.ArchivedWorktrees, *g)
 		}
 	}
 	s.render(w, "archive", data)
