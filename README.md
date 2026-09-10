@@ -1,5 +1,14 @@
 # thin-observer
 
+> **⚠️ 本项目已归档，不再维护。**
+>
+> thin-observer 的能力已经拆分进两个后继项目：
+>
+> - **[involute](https://github.com/fakechris/involute)** — agent-native 的 work-graph kernel：稳定的 work identity、delivery contract、typed links、decision 与 evidence，通过 MCP 由 agent 驱动，kanban 只是观测面。thin-observer 里"任务身份 / lineage / 看板"这部分能力在这里继续演进。
+> - **[planofplan](https://github.com/fakechris/planofplan)** — 本地的 AI coding agent 观测中心：额度与消耗追踪，以及 user message → session → tool calls → file touches → commit 的工作链路溯源。thin-observer 里"被动观察 agent 在干什么"那部分能力在这里继续演进。
+>
+> 本仓库保留为只读存档，下面的内容描述的是归档时的状态。
+
 **A passive observer for coding-agent plan files.** Watches `plan.md` / `todo.md` / `progress.md` across all your worktrees and projects a kanban board out of them — without asking the agent to cooperate.
 
 Three pains it fixes:
@@ -16,14 +25,10 @@ thin-observer does the opposite. It watches your plan files, snapshots them, and
 
 ## Install
 
-```bash
-go install github.com/chris/thin-observer/cmd/thin-observer@latest
-```
-
-Or from source:
+归档后不再发布新版本，只能从源码构建：
 
 ```bash
-git clone https://github.com/chris/thin-observer
+git clone https://github.com/fakechris/thin-observer
 cd thin-observer
 go build -o thin-observer ./cmd/thin-observer
 ```
@@ -101,7 +106,7 @@ snapshots/          # raw plan markdown, by hash (planned)
 
 ## Status
 
-MVP. Observer-side task inference + web kanban work end-to-end for the author's own coding workflow. Rough edges expected; PRs welcome.
+**已归档（2026-09-09）。** MVP 阶段：observer-side 任务推断 + web kanban 能在作者自己的工作流里端到端跑通，但不再接受 issue / PR。后续能力见 [involute](https://github.com/fakechris/involute) 和 [planofplan](https://github.com/fakechris/planofplan)。
 
 See [`docs/archived-prd-2026-04-20/REASONS-ARCHIVED.md`](docs/archived-prd-2026-04-20/REASONS-ARCHIVED.md) for why this project took the observer-side path instead of the cross-agent protocol direction of the original PRD.
 
